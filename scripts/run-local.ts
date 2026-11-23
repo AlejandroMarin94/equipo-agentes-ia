@@ -2,7 +2,7 @@
  * Ejecuta una petición completa con el motor real, sin Supabase ni navegador:
  * repositorio en memoria y el proveedor de LLM_PROVIDER (Claude por defecto).
  *
- *   npx tsx scripts/run-local.ts ["petición"] [--out carpeta]
+ *   npm run run-local -- ["petición"] [--out carpeta]
  *
  * Lee la configuración de .env.local o del entorno (el token no se imprime). Con Claude, usa
  * CLAUDE_CODE_OAUTH_TOKEN si está y, si no, la sesión de Claude Code de este equipo.
@@ -31,7 +31,7 @@ const DEFAULT_REQUEST = "Añade una página de contacto con formulario";
 const args = process.argv.slice(2);
 const outIndex = args.indexOf("--out");
 const outDir = outIndex >= 0 ? args[outIndex + 1] : null;
-const request = args.filter((_, i) => i !== outIndex && i !== outIndex + 1)[0] ?? DEFAULT_REQUEST;
+const request = args.filter((_, i) => outIndex < 0 || (i !== outIndex && i !== outIndex + 1))[0] ?? DEFAULT_REQUEST;
 
 const secret = process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
 const mask = (text: string) => (secret ? text.replaceAll(secret, "***") : text);

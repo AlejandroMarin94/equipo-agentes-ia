@@ -43,7 +43,8 @@ flowchart TD
 En Vercel Hobby ninguna función puede durar más de 300 s (con Fluid Compute), y una ejecución completa encadena hasta ~30 llamadas al LLM. Por eso el motor es una **máquina de estados que avanza un solo paso por llamada** (`POST /api/runs/[id]/step`, `maxDuration = 300`): cada paso hace como mucho una llamada al LLM, guarda el resultado en la base de datos y devuelve el estado. La página de la ejecución llama a `step` en bucle mientras la ejecución no haya terminado.
 
 - **Bloqueo:** antes de avanzar, el paso hace un `update` condicional sobre `runs.locked_until` (solo gana quien lo encuentra vacío o caducado). Si hay dos pestañas abiertas, la segunda recibe `busy` y espera; nunca se ejecutan dos pasos del mismo run a la vez.
-- **Límite de la API (429) o modelo saturado (503):** el run no falla. Se registra el evento «límite de la API, reintento en X s», el paso responde `retryAfter`, el bloqueo se alarga hasta esa hora y el navegador espera y reintenta.
+- **Modelo saturado (503), tiempo agotado en el servidor (504) o modelo no disponible (404):** se prueba el siguiente modelo de la cadena de respaldo (ver «Modelo de cada agente»). El modelo que responde queda en el evento y se ve en el registro (en ámbar si ha sido un respaldo).
+- **Límite de la API (429) o todos los modelos saturados:** el run no falla. Se registra el evento «límite de la API / modelo saturado, reintento en X s», el paso responde `retryAfter`, el bloqueo se alarga hasta esa hora y el navegador espera y reintenta.
 - **Otros errores** (respuesta no válida, tiempo agotado…): se registran y se reintenta el paso; tras 3 errores seguidos el run se marca como `failed` con el motivo.
 - **Directo:** la interfaz se suscribe con Supabase Realtime a `runs`, `tasks` y `events`. Antes de cada llamada al LLM se escribe un evento «trabajando en…», así la tarjeta del agente activo se ilumina mientras piensa. Si Realtime no conecta, la página consulta la base de datos cada 2 s.
 
@@ -67,17 +68,30 @@ La cuota gratuita de Gemini va por modelo, y los agentes no gastan igual: el Orq
 
 | Agente | Variable | Por defecto |
 |---|---|---|
-| Orquestador | `GEMINI_MODEL_ORCHESTRATOR` | `gemini-3.8-flash` (Flash: mejor para planificar, menos cuota) |
+| Orquestador | `GEMINI_MODEL_ORCHESTRATOR` | `gemini-3.5-flash` (Flash: mejor para planificar, menos cuota) |
 | Develop | `GEMINI_MODEL_DEVELOP` | `gemini-3.5-flash-lite` (Flash-Lite: más peticiones al día) |
 | Testing | `GEMINI_MODEL_TESTING` | `gemini-3.5-flash-lite` |
 
-Si falta la variable de un agente se usa `GEMINI_MODEL`, y si tampoco está, el valor por defecto. Los nombres por defecto son los Flash y Flash-Lite más recientes que aparecen en los tipos de `@google/genai` 3.6.1; **que estén disponibles para tu clave y en el plan gratuito se comprueba con la clave**:
+Si falta la variable de un agente se usa `GEMINI_MODEL`, y si tampoco está, el valor por defecto. Estos valores se han comprobado con una clave nueva del plan gratuito (23/11/2026): `gemini-3.8-flash` y `gemini-3.7-flash` respondían 503 («high demand») de forma repetida, `gemini-3.6-flash` daba 503 o 504 tras esperar 90-220 s, y los 2.5 dan 404 («no longer available to new users»). `gemini-3.5-flash` y los Flash-Lite respondían con JSON estructurado (los Flash-Lite, con algún 503 inmediato). El 503 no lo provoca el JSON estructurado: el mismo modelo responde o no con y sin `responseSchema` según el momento.
+
+**Cadena de respaldo.** En el plan gratuito los 503 son frecuentes y pasajeros, y afectan a cada modelo por separado. Si el modelo de un agente da 503, 504 o 404, el proveedor prueba en la misma llamada los de `GEMINI_FALLBACK_MODELS` (separados por comas; vacía = sin respaldo), primero los de su misma gama (Flash-Lite para Develop y Testing, Flash para el Orquestador) para no gastar la cuota de la otra. Por defecto: `gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.5-flash, gemini-3.6-flash`. Cada modelo tiene como mucho 120 s (el SDK se lo pasa al servidor, que corta con 504) y la cadena entera, 240 s: con el plan gratuito saturado un modelo puede tardar más de 3 minutos en contestar 503, y sin ese tope no quedaría tiempo para el respaldo. Si todos fallan por saturación, el paso se reintenta a los 15 s sin contar como error; si ninguno existe (todo 404), es un error de configuración. El 429 no pasa al siguiente modelo: se espera lo que indique la API.
+
+Para comprobar la clave y los modelos (configurados y de respaldo):
 
 ```bash
-GEMINI_API_KEY=... npx tsx scripts/check-gemini.ts   # o con la clave en .env.local
+npx tsx scripts/check-gemini.ts   # lee la clave de .env.local o del entorno, sin imprimirla
 ```
 
-El script lista los modelos «flash» de la cuenta y hace una llamada mínima con JSON estructurado a cada modelo configurado. Las cuotas exactas de cada modelo se ven en AI Studio.
+El script lista los modelos «flash» de la cuenta y hace una llamada mínima con JSON estructurado a cada uno. Un 503 suele ser saturación del momento: conviene repetir antes de descartar un modelo. Las cuotas exactas de cada modelo se ven en AI Studio.
+
+### Prueba de extremo a extremo sin Supabase
+
+```bash
+npx tsx scripts/run-local.ts                                   # «Añade una página de contacto con formulario»
+npx tsx scripts/run-local.ts "Añade un modo oscuro" --out /tmp/web
+```
+
+Ejecuta el motor completo con el repositorio en memoria y el proveedor de `LLM_PROVIDER` (Gemini real por defecto; con `LLM_PROVIDER=mock` no gasta cuota). Imprime los eventos, el modelo que responde y el estado de las tareas hasta `done` o `failed`, cuenta las peticiones HTTP a la API y, con `--out`, guarda la web resultante y los eventos.
 
 ### Estructura
 
@@ -97,6 +111,8 @@ lib/
 proxy.ts                     refresca la sesión y exige login
 supabase/migrations/         esquema SQL
 scripts/create-test-user.ts  crea el usuario de prueba
+scripts/check-gemini.ts      comprueba la clave y los modelos de Gemini
+scripts/run-local.ts         ejecución completa en local, sin Supabase
 tests/                       Vitest
 ```
 
@@ -142,7 +158,8 @@ El script lee `NEXT_PUBLIC_SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` de `.env.
 | `SUPABASE_SERVICE_ROLE_KEY` | Solo servidor: escrituras del motor y vista previa |
 | `GEMINI_API_KEY` | Solo servidor |
 | `GEMINI_MODEL_ORCHESTRATOR`, `GEMINI_MODEL_DEVELOP`, `GEMINI_MODEL_TESTING` | Opcionales: modelo de cada agente (ver «Modelo de cada agente») |
-| `GEMINI_MODEL` | Opcional: respaldo común para el agente que no tenga su variable |
+| `GEMINI_MODEL` | Opcional: modelo común para el agente que no tenga su variable |
+| `GEMINI_FALLBACK_MODELS` | Opcional: modelos de respaldo si el del agente está saturado o no disponible (ver «Modelo de cada agente») |
 | `LLM_PROVIDER` | `gemini` (por defecto) o `mock` |
 | `MAX_RUNS_PER_DAY` | Ejecuciones por usuario cada 24 h, por defecto 15 |
 | `MAX_RUNS_PER_HOUR` | Ejecuciones de todos los usuarios juntos en la última hora, por defecto 4 |
@@ -172,7 +189,7 @@ npm run lint
 npm run build
 ```
 
-Los tests cubren la lógica pura con el proveedor mock y un repositorio en memoria (detrás de la misma interfaz que el de Supabase): transiciones de la máquina de estados, aplicación de cambios a los archivos, comprobaciones automáticas de Testing, el bucle fallo → reintento → bloqueo, los límites por usuario y global por hora, el modelo de cada agente, el 429 y el 503 de Gemini, el bloqueo entre pasos simultáneos (incluida la relectura del run tras bloquearlo), los pasos cortados a mitad y los errores repetidos.
+Los tests cubren la lógica pura con el proveedor mock y un repositorio en memoria (detrás de la misma interfaz que el de Supabase): transiciones de la máquina de estados, aplicación de cambios a los archivos, comprobaciones automáticas de Testing, el bucle fallo → reintento → bloqueo, los límites por usuario y global por hora, el modelo de cada agente, el 429, el 503 y el 504 de Gemini, la cadena de respaldo de modelos, el bloqueo entre pasos simultáneos (incluida la relectura del run tras bloquearlo), los pasos cortados a mitad y los errores repetidos.
 
 ## Límites conocidos
 

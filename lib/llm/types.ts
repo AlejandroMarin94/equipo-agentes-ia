@@ -44,7 +44,7 @@ export interface SummaryTask {
 
 /**
  * Lo que necesita el motor de cada agente. Hay dos implementaciones:
- * Gemini (real) y mock (determinista, para desarrollo y tests).
+ * la cadena de modelos reales (provider.ts) y mock (determinista, para desarrollo y tests).
  */
 export interface AgentProvider {
   readonly name: string;
@@ -64,7 +64,7 @@ export class RateLimitError extends Error {
   constructor(
     public readonly retryAfterSeconds: number,
     message = "Límite de la API",
-    /** true si los modelos están saturados (503/504) y no es un 429. */
+    /** true si los modelos están saturados o sin tiempo (503/504) y no es solo cuota (429). */
     public readonly overloaded = false,
   ) {
     super(message);

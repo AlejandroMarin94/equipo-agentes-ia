@@ -13,7 +13,8 @@ function TaskCard({ task }: { task: Task }) {
       {task.description && <p className="mt-1 line-clamp-3 text-xs text-slate-600">{task.description}</p>}
       <details className="mt-2 text-xs text-slate-600">
         <summary className="cursor-pointer select-none text-slate-500">
-          {task.acceptance_criteria.length} criterios de aceptación
+          {task.acceptance_criteria.length}{" "}
+          {task.acceptance_criteria.length === 1 ? "criterio de aceptación" : "criterios de aceptación"}
         </summary>
         <ul className="mt-1 list-disc space-y-0.5 pl-4">
           {task.acceptance_criteria.map((c) => (

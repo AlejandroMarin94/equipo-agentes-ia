@@ -147,7 +147,7 @@ export async function step(
         agent,
         kind: "rate_limit",
         message: error.overloaded
-          ? `El modelo de IA está saturado; reintento en ${retryAfter} s.`
+          ? `Modelos de IA saturados (${errorMessage(error)}); reintento en ${retryAfter} s.`
           : `Límite de la API alcanzado; reintento en ${retryAfter} s.`,
       });
     } else {

@@ -16,6 +16,10 @@ import {
 // Tiempo total de una llamada, respaldos incluidos. Por debajo de maxDuration (300 s)
 // para que el paso tenga margen de guardar el error.
 const REQUEST_TIMEOUT_MS = 240_000;
+// Tiempo máximo de cada modelo de la cadena. El SDK se lo pasa al servidor (X-Server-Timeout), que
+// responde 504 al agotarlo. Con el plan gratuito saturado, un modelo puede tardar ~220 s en dar un 503:
+// sin este tope se comería todo el paso y no quedaría tiempo para el respaldo.
+const ATTEMPT_TIMEOUT_MS = 120_000;
 // Sin al menos este margen no se prueba el siguiente modelo de la cadena.
 const MIN_ATTEMPT_MS = 20_000;
 const DEFAULT_RETRY_SECONDS = 30;
@@ -24,6 +28,10 @@ const OVERLOADED_RETRY_SECONDS = 15;
 // 503 (saturado) y 504 (DEADLINE_EXCEEDED) son pasajeros; 404 es un modelo que ya no está disponible para la clave.
 const TRANSIENT_STATUSES = [503, 504];
 const FALLBACK_STATUSES = [...TRANSIENT_STATUSES, 404];
+
+/** Corte del lado del cliente por el tope de tiempo (si el servidor no llegó a responder 504). */
+const isClientTimeout = (error: unknown) =>
+  error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 
 const COMMON_RULES = `Trabajáis sobre una web estática pequeña (HTML, CSS y JS sin build) de un negocio ficticio.
 Reglas de la web: rutas siempre relativas (nada que empiece por "/"), sin dependencias externas ni CDNs,
@@ -124,17 +132,18 @@ export interface GeminiModels {
 
 /**
  * Por defecto: Flash para el Orquestador y Flash-Lite (más cuota gratuita) para Develop y Testing.
- * Comprobados con la clave el 23/11/2026: gemini-3.8-flash y gemini-3.7-flash daban 503 de forma
- * repetida en el plan gratuito; gemini-3.6-flash y gemini-3.5-flash-lite respondían con JSON estructurado.
+ * Comprobados con una clave del plan gratuito el 23/11/2026: gemini-3.8-flash y gemini-3.7-flash
+ * daban 503 de forma repetida y gemini-3.6-flash, 503/504 tras esperas de 90-220 s; gemini-3.5-flash
+ * y los Flash-Lite respondían con JSON estructurado (los Flash-Lite, con 503 rápidos a ratos).
  */
 export const DEFAULT_GEMINI_MODELS: GeminiModels = {
-  orchestrator: "gemini-3.6-flash",
+  orchestrator: "gemini-3.5-flash",
   develop: "gemini-3.5-flash-lite",
   testing: "gemini-3.5-flash-lite",
 };
 
 /** Modelos que se prueban, en orden, si el del agente está saturado o no disponible. */
-export const DEFAULT_FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.6-flash", "gemini-3.5-flash"];
+export const DEFAULT_FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash"];
 
 /** GEMINI_MODEL_<AGENTE>, si no GEMINI_MODEL y si no el valor por defecto de cada agente. */
 export function resolveGeminiModels(env: Record<string, string | undefined>): GeminiModels {
@@ -181,9 +190,9 @@ export class GeminiProvider implements AgentProvider {
   }
 
   /**
-   * Llama al modelo del agente y, si está saturado (503), agota el tiempo en el servidor (504)
+   * Llama al modelo del agente y, si está saturado (503), agota su tiempo (504 o corte del cliente)
    * o ya no está disponible (404), prueba el siguiente de la cadena. Si todos fallan por
-   * saturación, RateLimitError: el paso se reintenta más tarde sin contar como error.
+   * saturación o tiempo, RateLimitError: el paso se reintenta más tarde sin contar como error.
    */
   private async generate<T>(
     model: string,
@@ -208,7 +217,7 @@ export class GeminiProvider implements AgentProvider {
             responseMimeType: "application/json",
             responseSchema: schema,
             temperature: 0.3,
-            httpOptions: { timeout: remaining },
+            httpOptions: { timeout: Math.min(remaining, ATTEMPT_TIMEOUT_MS) },
           },
         });
         const text = response.text;
@@ -224,13 +233,19 @@ export class GeminiProvider implements AgentProvider {
           lastError = error;
           continue;
         }
+        if (isClientTimeout(error)) {
+          failed.push(`${candidate} (tiempo agotado)`);
+          transient = true;
+          lastError = error;
+          continue;
+        }
         throw error;
       }
     }
 
     // Frecuente en el plan gratuito y pasajero: no debe contar como error del run.
     if (transient) {
-      throw new RateLimitError(OVERLOADED_RETRY_SECONDS, `Modelos saturados: ${failed.join(", ")}`, true);
+      throw new RateLimitError(OVERLOADED_RETRY_SECONDS, failed.join(", "), true);
     }
     throw lastError;
   }

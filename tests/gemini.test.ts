@@ -89,6 +89,15 @@ describe("cadena de respaldo de modelos", () => {
     expect(out).toEqual({ summary: "ok", model: "resp-2", fallbackFrom: ["m-orq (503)", "resp-1 (504)"] });
   });
 
+  it("si un modelo agota su tiempo sin respuesta del servidor, pasa al siguiente", async () => {
+    const provider = providerReturning(async ({ model }) => {
+      if (model === "m-orq") throw new DOMException("This operation was aborted", "AbortError");
+      return { text: '{"summary":"ok"}' };
+    }, ["resp-1"]);
+    const out = await provider.summarize({ request: "x", tasks: [] });
+    expect(out).toMatchObject({ model: "resp-1", fallbackFrom: ["m-orq (tiempo agotado)"] });
+  });
+
   it("un modelo no disponible (404) también pasa al siguiente", async () => {
     const provider = providerReturning(async ({ model }) => {
       if (model === "m-orq") throw apiError(404);

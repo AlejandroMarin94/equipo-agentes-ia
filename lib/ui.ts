@@ -36,21 +36,3 @@ export const AGENTS: Record<Agent, { name: string; role: string; badge: string }
   },
   system: { name: "Sistema", role: "", badge: "bg-slate-100 text-slate-700" },
 };
-
-const timeFormat = new Intl.DateTimeFormat("es-ES", {
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  timeZone: "Europe/Madrid",
-});
-
-const dateFormat = new Intl.DateTimeFormat("es-ES", {
-  day: "2-digit",
-  month: "short",
-  hour: "2-digit",
-  minute: "2-digit",
-  timeZone: "Europe/Madrid",
-});
-
-export const formatTime = (iso: string) => timeFormat.format(new Date(iso));
-export const formatDate = (iso: string) => dateFormat.format(new Date(iso));

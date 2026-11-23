@@ -1,4 +1,5 @@
-import { AGENTS, formatTime } from "@/lib/ui";
+import { formatTime } from "@/lib/format";
+import { AGENTS } from "@/lib/ui";
 import type { RunEvent, Task } from "@/lib/types";
 
 const KIND_STYLE: Partial<Record<RunEvent["kind"], string>> = {

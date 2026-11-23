@@ -1,8 +1,27 @@
 /** Formato de tiempos para mensajes y la interfaz. Sin dependencias de servidor ni de navegador. */
 
+/** Todas las horas y fechas, en hora de Madrid. */
 const madridTime = new Intl.DateTimeFormat("es-ES", { timeZone: "Europe/Madrid", hour: "2-digit", minute: "2-digit" });
+const madridTimeSeconds = new Intl.DateTimeFormat("es-ES", {
+  timeZone: "Europe/Madrid",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+const madridDate = new Intl.DateTimeFormat("es-ES", {
+  timeZone: "Europe/Madrid",
+  day: "2-digit",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+});
 
+/** «08:15» */
 export const formatMadridTime = (date: Date) => madridTime.format(date);
+/** «08:15:42», para el registro. */
+export const formatTime = (iso: string) => madridTimeSeconds.format(new Date(iso));
+/** «23 nov, 08:15» */
+export const formatDate = (iso: string) => madridDate.format(new Date(iso));
 
 /** A partir de esta espera se dice también la hora a la que termina (límite de uso agotado). */
 export const LONG_WAIT_SECONDS = 3600;

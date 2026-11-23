@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { formatTime } from "@/lib/ui";
+import { formatTime } from "@/lib/format";
 import type { RunFile } from "@/lib/types";
 
 export function SitePreview({ runId, files }: { runId: string; files: RunFile[] }) {

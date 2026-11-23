@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getUser } from "@/lib/supabase/server";
-import { formatDate } from "@/lib/ui";
+import { formatDate } from "@/lib/format";
 import type { Run } from "@/lib/types";
 import { AppHeader } from "./components/AppHeader";
 import { StatusBadge } from "./components/StatusBadge";

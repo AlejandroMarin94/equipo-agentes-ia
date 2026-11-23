@@ -1,4 +1,5 @@
-import { AGENTS, formatTime } from "@/lib/ui";
+import { formatTime } from "@/lib/format";
+import { AGENTS } from "@/lib/ui";
 import type { Agent, RunEvent } from "@/lib/types";
 
 type AgentState = "idle" | "working" | "waiting";

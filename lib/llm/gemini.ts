@@ -12,6 +12,7 @@ import {
 
 const REQUEST_TIMEOUT_MS = 50_000;
 const DEFAULT_RETRY_SECONDS = 30;
+const OVERLOADED_RETRY_SECONDS = 15;
 
 const COMMON_RULES = `Trabajáis sobre una web estática pequeña (HTML, CSS y JS sin build) de un negocio ficticio.
 Reglas de la web: rutas siempre relativas (nada que empiece por "/"), sin dependencias externas ni CDNs,
@@ -129,6 +130,10 @@ export class GeminiProvider implements AgentProvider {
     } catch (error) {
       if (error instanceof ApiError && error.status === 429) {
         throw new RateLimitError(parseRetryDelay(error.message), error.message);
+      }
+      // "The model is overloaded": frecuente en el plan gratuito y pasajero; no debe contar como error.
+      if (error instanceof ApiError && error.status === 503) {
+        throw new RateLimitError(OVERLOADED_RETRY_SECONDS, error.message, true);
       }
       throw error;
     }

@@ -45,9 +45,14 @@ export interface AgentProvider {
   summarize(input: { request: string; tasks: SummaryTask[] }): Promise<string>;
 }
 
-/** Límite de peticiones o cuota del proveedor: el run no falla, se reintenta. */
+/** Límite de peticiones, cuota o modelo saturado: el run no falla, se reintenta. */
 export class RateLimitError extends Error {
-  constructor(public readonly retryAfterSeconds: number, message = "Límite de la API") {
+  constructor(
+    public readonly retryAfterSeconds: number,
+    message = "Límite de la API",
+    /** true si es un 503 (modelo saturado) y no un 429. */
+    public readonly overloaded = false,
+  ) {
     super(message);
     this.name = "RateLimitError";
   }

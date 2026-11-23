@@ -6,7 +6,7 @@ type AgentState = "idle" | "working" | "waiting";
 const STATE_LABEL: Record<AgentState, { label: string; className: string; dot: string }> = {
   idle: { label: "En espera", className: "text-slate-600", dot: "bg-slate-300" },
   working: { label: "Trabajando", className: "text-emerald-700", dot: "bg-emerald-500 animate-pulse" },
-  waiting: { label: "Esperando por límite de la API", className: "text-amber-700", dot: "bg-amber-500" },
+  waiting: { label: "Esperando a la API", className: "text-amber-700", dot: "bg-amber-500" },
 };
 
 /** El estado de cada agente se deduce de su último evento. */

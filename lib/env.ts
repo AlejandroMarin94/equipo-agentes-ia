@@ -8,13 +8,13 @@ export function supabasePublicEnv() {
   return { url, key };
 }
 
-/** Ejecuciones de todos los usuarios juntos en la última hora. */
-export function maxRunsPerHour(): number {
-  const value = Number(process.env.MAX_RUNS_PER_HOUR);
-  return Number.isFinite(value) && value > 0 ? value : 4;
-}
+const positive = (raw: string | undefined, fallback: number) => {
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+};
 
-export function maxRunsPerDay(): number {
-  const value = Number(process.env.MAX_RUNS_PER_DAY);
-  return Number.isFinite(value) && value > 0 ? value : 15;
-}
+/** Ejecuciones de todos los usuarios juntos en la última hora (protege la suscripción de Claude). */
+export const maxRunsPerHour = (env: Record<string, string | undefined> = process.env) => positive(env.MAX_RUNS_PER_HOUR, 3);
+
+/** Ejecuciones de cada usuario en 24 horas. */
+export const maxRunsPerDay = (env: Record<string, string | undefined> = process.env) => positive(env.MAX_RUNS_PER_DAY, 10);

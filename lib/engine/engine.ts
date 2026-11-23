@@ -1,5 +1,5 @@
 import { TEMPLATE_FILES } from "../template";
-import { RateLimitError, type AgentProvider, type ModelInfo, type TaskInput } from "../llm/types";
+import { FatalLlmError, RateLimitError, type AgentProvider, type ModelInfo, type TaskInput } from "../llm/types";
 import type { Agent, CheckResult, Run, RunStatus, SiteFiles, Task } from "../types";
 import { TERMINAL_STATUSES } from "../types";
 import { runDeterministicChecks } from "./checks";
@@ -80,17 +80,17 @@ export async function startRun(
   if (recent >= options.maxRunsPerDay) {
     return {
       ok: false,
-      error: `Has alcanzado el límite de ${options.maxRunsPerDay} ejecuciones en 24 horas (protege la cuota gratuita de la API).`,
+      error: `Has alcanzado el límite de ${options.maxRunsPerDay} ejecuciones en 24 horas (protege la suscripción de Claude que usan los agentes).`,
     };
   }
-  // Límite global: las cuotas gratuitas de las claves de IA son unas para todos los usuarios.
+  // Límite global: la suscripción de Claude es una para todos los usuarios.
   const lastHour = await repo.listRunCreationsSince(new Date(now.getTime() - HOUR_MS));
   const releaseAt = hourlyLimitReleaseAt(lastHour, options.maxRunsPerHour);
   if (releaseAt) {
     const minutes = Math.max(1, Math.ceil((releaseAt.getTime() - now.getTime()) / 60_000));
     return {
       ok: false,
-      error: `Se ha alcanzado el límite de ${options.maxRunsPerHour} ejecuciones por hora entre todos los usuarios (protege la cuota gratuita de la API). Podrás lanzar otra a las ${formatMadridTime(releaseAt)} (hora de Madrid), dentro de ${minutes} min.`,
+      error: `Se ha alcanzado el límite de ${options.maxRunsPerHour} ejecuciones por hora entre todos los usuarios (protege la suscripción de Claude). Podrás lanzar otra a las ${formatMadridTime(releaseAt)} (hora de Madrid), dentro de ${minutes} min.`,
     };
   }
 
@@ -144,10 +144,18 @@ export async function step(
         agent,
         kind: "rate_limit",
         message: error.overloaded
-          ? `Modelos de IA saturados (${errorMessage(error)}); reintento en ${formatWait(retryAfter)}.`
+          ? `Claude saturado o sin respuesta (${errorMessage(error)}); reintento en ${formatWait(retryAfter)}.`
           : retryAfter >= LONG_WAIT_SECONDS
-            ? `Cuota de la API agotada hasta las ${formatMadridTime(lockUntil)} (hora de Madrid); reintento en ${formatWait(retryAfter)}.`
-            : `Límite de la API alcanzado; reintento en ${formatWait(retryAfter)}.`,
+            ? `Límite de uso de la suscripción alcanzado hasta las ${formatMadridTime(lockUntil)} (hora de Madrid); reintento en ${formatWait(retryAfter)}.`
+            : `Límite de uso de la suscripción alcanzado; reintento en ${formatWait(retryAfter)}.`,
+      });
+    } else if (error instanceof FatalLlmError) {
+      // Sin sesión, credencial de pago o mal configurado: reintentar no lo arregla.
+      await repo.addEvent({ run_id: runId, agent, kind: "error", message: `Error: ${errorMessage(error)}` });
+      await repo.updateRun(runId, {
+        status: "failed",
+        error_count: current.error_count + 1,
+        summary: `La ejecución se ha detenido: ${errorMessage(error)}`,
       });
     } else {
       const errors = current.error_count + 1;

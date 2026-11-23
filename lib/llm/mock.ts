@@ -10,7 +10,7 @@ import type {
 } from "./types";
 
 /**
- * Proveedor determinista para desarrollar y probar sin clave de API.
+ * Proveedor determinista para desarrollar y probar sin gastar la suscripción de Claude.
  * Reconoce unas pocas peticiones típicas (contacto, precios, modo oscuro) y
  * para cualquier otra genera una tarea genérica. La primera tarea falla
  * siempre la primera revisión de Testing, para que se vea el bucle

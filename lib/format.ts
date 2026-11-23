@@ -4,7 +4,7 @@ const madridTime = new Intl.DateTimeFormat("es-ES", { timeZone: "Europe/Madrid",
 
 export const formatMadridTime = (date: Date) => madridTime.format(date);
 
-/** A partir de esta espera se dice también la hora a la que termina (cuota diaria agotada). */
+/** A partir de esta espera se dice también la hora a la que termina (límite de uso agotado). */
 export const LONG_WAIT_SECONDS = 3600;
 
 /** Duración legible: «45 s», «3 min 20 s», «12 h 22 min». */

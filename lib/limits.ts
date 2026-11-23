@@ -1,4 +1,4 @@
-/** Límites que protegen la cuota gratuita y el tiempo máximo de Vercel. Sin dependencias de servidor. */
+/** Límites que protegen la suscripción de Claude y el tiempo máximo de Vercel. Sin dependencias de servidor. */
 export const LIMITS = {
   maxTasks: 5,
   maxAttempts: 3,

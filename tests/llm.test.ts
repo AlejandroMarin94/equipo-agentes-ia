@@ -1,346 +1,329 @@
-import { ApiError } from "@google/genai";
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { brotliCompressSync } from "node:zlib";
+import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { afterEach, describe, expect, it } from "vitest";
 import {
-  DEFAULT_CHAINS,
-  LinkError,
+  DEFAULT_MODELS,
+  ModelError,
   callChain,
-  parseChain,
-  resolveChains,
-  type ChainLink,
-  type LinkCaller,
+  parseModels,
+  resolveModels,
   type LlmRequest,
+  type ModelCaller,
 } from "@/lib/llm/chain";
-import { createGeminiCaller, parseRetryDelay } from "@/lib/llm/gemini";
-import { getProvider, resolveUsableChains } from "@/lib/llm";
+import { claudeAuth, classifyFailure, createClaudeCaller, subprocessEnv, type CallInfo } from "@/lib/llm/claude";
+import { claudeExecutable, resetClaudeExecutable } from "@/lib/llm/claude-cli";
+import { getProvider } from "@/lib/llm";
 import { MockProvider } from "@/lib/llm/mock";
-import { buildChatBody, createOpenAICompatibleCaller, parseRetryAfter } from "@/lib/llm/openai-compatible";
-import { ChainProvider } from "@/lib/llm/provider";
-import { DEVELOP_SCHEMA, PLAN_SCHEMA, SUMMARY_SCHEMA, shapeError, toGeminiSchema } from "@/lib/llm/schemas";
-import { RateLimitError } from "@/lib/llm/types";
+import { ClaudeProvider } from "@/lib/llm/provider";
+import { DEVELOP_SCHEMA, SUMMARY_SCHEMA, shapeError } from "@/lib/llm/schemas";
+import { FatalLlmError, RateLimitError } from "@/lib/llm/types";
 
-const link = (label: string): ChainLink => parseChain(label)[0];
-const chainOf = (...labels: string[]) => labels.map(link);
+const request: Omit<LlmRequest, "timeoutMs"> = { system: "s", prompt: "p", output: SUMMARY_SCHEMA };
+const ok = '{"summary":"ok"}';
 
-const request: Omit<LlmRequest, "timeoutMs"> = {
-  system: "s",
-  prompt: "p",
-  output: SUMMARY_SCHEMA,
-  temperature: 0.3,
-  maxTokens: 100,
-};
-
-/** Caller falso: cada modelo responde lo que diga `behaviour` (texto o error). */
-function fakeCaller(behaviour: Record<string, string | Error>, calls: string[] = []): LinkCaller {
-  return async (l) => {
-    calls.push(l.label);
-    const result = behaviour[l.label];
-    if (result === undefined) throw new Error(`modelo inesperado ${l.label}`);
+/** Caller falso: cada modelo responde, en orden, lo que diga su lista (texto o error). */
+function fakeCaller(behaviour: Record<string, (string | Error)[]>, calls: { model: string; prompt: string }[] = []): ModelCaller {
+  return async (model, req) => {
+    calls.push({ model, prompt: req.prompt });
+    const result = behaviour[model]?.shift();
+    if (result === undefined) throw new Error(`llamada inesperada a ${model}`);
     if (result instanceof Error) throw result;
     return result;
   };
 }
 
-const ok = '{"summary":"ok"}';
-
-describe("cadenas: LLM_CHAIN_*", () => {
-  it("proveedor/modelo, con barras en el modelo y opciones extra", () => {
-    expect(parseChain(" groq/openai/gpt-oss-120b?reasoning_effort=low , mistral/mistral-small-2603,, gemini/g-1 ")).toEqual([
-      { provider: "groq", model: "openai/gpt-oss-120b", options: { reasoning_effort: "low" }, label: "groq/openai/gpt-oss-120b" },
-      { provider: "mistral", model: "mistral-small-2603", options: {}, label: "mistral/mistral-small-2603" },
-      { provider: "gemini", model: "g-1", options: {}, label: "gemini/g-1" },
-    ]);
+describe("modelos de cada agente", () => {
+  it("Opus para el Orquestador con Sonnet de respaldo; Sonnet para Develop y Testing", () => {
+    expect(resolveModels({})).toEqual({
+      orchestrator: ["claude-opus-5-5", "claude-sonnet-5-5"],
+      develop: ["claude-sonnet-5-5"],
+      testing: ["claude-sonnet-5-5"],
+    });
   });
 
-  it("no repite un eslabón y rechaza proveedores desconocidos o sin modelo", () => {
-    expect(parseChain("groq/a,groq/a,mistral/a").map((l) => l.label)).toEqual(["groq/a", "mistral/a"]);
-    expect(() => parseChain("openai/gpt-5")).toThrow(/Proveedor desconocido/);
-    expect(() => parseChain("gemini-3.5-flash")).toThrow(/proveedor\/modelo/);
-    expect(() => parseChain("groq/")).toThrow(/proveedor\/modelo/);
+  it("CLAUDE_MODELS_*: lista separada por comas, sin repetir; vacía = por defecto", () => {
+    expect(parseModels(" a , b,,a ")).toEqual(["a", "b"]);
+    const models = resolveModels({ CLAUDE_MODELS_DEVELOP: "claude-opus-5-5", CLAUDE_MODELS_TESTING: "  " });
+    expect(models.develop).toEqual(["claude-opus-5-5"]);
+    expect(models.testing).toEqual(parseModels(DEFAULT_MODELS.testing));
   });
 
-  it("por defecto, la tabla de la auditoría; una variable vacía también usa el valor por defecto", () => {
-    const chains = resolveChains({ LLM_CHAIN_DEVELOP: "mistral/x, gemini/y", LLM_CHAIN_TESTING: "  " });
-    expect(chains.develop.map((l) => l.label)).toEqual(["mistral/x", "gemini/y"]);
-    expect(chains.testing).toEqual(parseChain(DEFAULT_CHAINS.testing));
-    expect(chains.orchestrator.map((l) => l.label)).toEqual([
-      "groq/openai/gpt-oss-120b",
-      "groq/qwen/qwen3.8-27b",
-      "mistral/mistral-small-2603",
-      "gemini/gemini-3.5-flash",
-    ]);
-    expect(chains.orchestrator[0].options).toEqual({ reasoning_effort: "low" });
-  });
-
-  it("un eslabón cuyo proveedor no tiene clave se salta y se registra", () => {
-    const { chains, skipped } = resolveUsableChains({}, (p) => p === "gemini");
-    expect(chains.orchestrator.map((l) => l.label)).toEqual(["gemini/gemini-3.5-flash"]);
-    expect(chains.develop.map((l) => l.label)).toEqual(["gemini/gemini-3.5-flash-lite"]);
-    expect(skipped).toContain("develop: mistral/mistral-large-4 (falta MISTRAL_API_KEY)");
-    expect(skipped).toContain("testing: groq/openai/gpt-oss-20b (falta GROQ_API_KEY)");
-  });
-
-  it("si un agente se queda sin ningún modelo con clave, error de configuración claro", () => {
-    expect(() => resolveUsableChains({ LLM_CHAIN_DEVELOP: "groq/a" }, (p) => p === "gemini")).toThrow(
-      /cadena de develop.*GROQ_API_KEY/,
-    );
-  });
-
-  it("getProvider: mock, real con solo la clave de Gemini, y error sin ninguna clave", () => {
+  it("getProvider: claude por defecto, mock, y error con otro valor", () => {
+    expect(getProvider({})).toBeInstanceOf(ClaudeProvider);
     expect(getProvider({ LLM_PROVIDER: "mock" })).toBeInstanceOf(MockProvider);
-    expect(getProvider({ GEMINI_API_KEY: "clave-falsa" })).toBeInstanceOf(ChainProvider);
-    expect(getProvider({ LLM_PROVIDER: "gemini", GEMINI_API_KEY: "clave-falsa" })).toBeInstanceOf(ChainProvider);
-    expect(() => getProvider({})).toThrow(/tiene clave/);
     expect(() => getProvider({ LLM_PROVIDER: "otro" })).toThrow(/LLM_PROVIDER desconocido/);
   });
 });
 
-describe("bucle de respaldo entre proveedores", () => {
-  it("si el primero está saturado, responde el de otro proveedor y queda registrado", async () => {
-    const calls: string[] = [];
-    const caller = fakeCaller(
-      {
-        "groq/openai/gpt-oss-120b": new LinkError("overloaded", "x", 503),
-        "mistral/mistral-small-2603": ok,
-      },
-      calls,
-    );
-    const out = await callChain(chainOf("groq/openai/gpt-oss-120b", "mistral/mistral-small-2603"), { groq: caller, mistral: caller }, request);
-    expect(calls).toEqual(["groq/openai/gpt-oss-120b", "mistral/mistral-small-2603"]);
-    expect(out).toEqual({ data: { summary: "ok" }, model: "mistral/mistral-small-2603", fallbackFrom: ["groq/openai/gpt-oss-120b (503)"] });
-  });
-
-  it("413 (petición demasiado grande para el plan de Groq) pasa al siguiente", async () => {
-    const caller = fakeCaller({ "groq/a": new LinkError("too_large", "x", 413), "mistral/b": ok });
-    const out = await callChain(chainOf("groq/a", "mistral/b"), { groq: caller, mistral: caller }, request);
-    expect(out).toMatchObject({ model: "mistral/b", fallbackFrom: ["groq/a (413)"] });
-  });
-
-  it("JSON inválido o con forma incorrecta pasa al siguiente", async () => {
-    const caller = fakeCaller({ "groq/a": "no es json", "groq/b": '{"resumen":"x"}', "gemini/c": "```json\n" + ok + "\n```" });
-    const out = await callChain(chainOf("groq/a", "groq/b", "gemini/c"), { groq: caller, gemini: caller }, request);
-    expect(out).toMatchObject({ model: "gemini/c", fallbackFrom: ["groq/a (JSON no válido)", "groq/b (JSON no válido)"] });
-  });
-
-  it("modelo no disponible en el plan, clave rechazada y corte por tiempo también pasan al siguiente", async () => {
-    const timeout = new DOMException("The operation was aborted due to timeout", "TimeoutError");
-    const caller = fakeCaller({
-      "mistral/large": new LinkError("unavailable", "not available in your subscription tier", 400),
-      "groq/a": new LinkError("auth", "invalid key", 401),
-      "groq/b": timeout,
-      "gemini/c": ok,
+describe("callChain: respaldo y JSON", () => {
+  it("si Opus está saturado responde Sonnet y queda registrado", async () => {
+    const caller = fakeCaller({ opus: [new ModelError("overloaded", "x")], sonnet: [ok] });
+    expect(await callChain(["opus", "sonnet"], caller, request)).toEqual({
+      data: { summary: "ok" },
+      model: "sonnet",
+      fallbackFrom: ["opus (saturado)"],
     });
-    const out = await callChain(chainOf("mistral/large", "groq/a", "groq/b", "gemini/c"), { mistral: caller, groq: caller, gemini: caller }, request);
-    expect(out.fallbackFrom).toEqual(["mistral/large (400, no disponible)", "groq/a (401, clave rechazada)", "groq/b (tiempo agotado)"]);
   });
 
-  it("un proveedor sin caller (sin clave) se salta sin contar como fallo", async () => {
-    const caller = fakeCaller({ "gemini/c": ok });
-    const out = await callChain(chainOf("groq/a", "gemini/c"), { gemini: caller }, request);
-    expect(out).toMatchObject({ model: "gemini/c", fallbackFrom: [] });
+  it("JSON no válido: se repite una vez con el error en el prompt y, si vale, no pasa al siguiente", async () => {
+    const calls: { model: string; prompt: string }[] = [];
+    const caller = fakeCaller({ opus: ["no es json", "```json\n" + ok + "\n```"] }, calls);
+    const out = await callChain(["opus", "sonnet"], caller, request);
+    expect(out).toMatchObject({ model: "opus", fallbackFrom: [] });
+    expect(calls.map((c) => c.model)).toEqual(["opus", "opus"]);
+    expect(calls[1].prompt).toMatch(/^p\n\nTu respuesta anterior no era válida \(JSON no válido/);
   });
 
-  it("si todos están saturados o sin tiempo, espera de saturación (15 s)", async () => {
-    const caller = fakeCaller({ "groq/a": new LinkError("timeout", "x", 504), "mistral/b": new LinkError("overloaded", "x", 503) });
-    const error = await callChain(chainOf("groq/a", "mistral/b"), { groq: caller, mistral: caller }, request).catch((e: unknown) => e);
+  it("JSON con forma incorrecta dos veces: pasa al siguiente modelo", async () => {
+    const caller = fakeCaller({ opus: ['{"resumen":"x"}', '{"resumen":"x"}'], sonnet: [ok] });
+    const out = await callChain(["opus", "sonnet"], caller, request);
+    expect(out).toMatchObject({ model: "sonnet", fallbackFrom: ["opus (JSON no válido)"] });
+  });
+
+  it("límite de uso en todos: espera hasta la renovación más próxima", async () => {
+    const caller = fakeCaller({ opus: [new ModelError("quota", "x", 3600)], sonnet: [new ModelError("quota", "x", 900)] });
+    const error = await callChain(["opus", "sonnet"], caller, request).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(RateLimitError);
-    expect(error).toMatchObject({ overloaded: true, retryAfterSeconds: 15, message: "groq/a (504), mistral/b (503)" });
+    expect(error).toMatchObject({ overloaded: false, retryAfterSeconds: 900, message: "opus (límite de uso), sonnet (límite de uso)" });
   });
 
-  it("si todos dan 429, se espera el menor retry-after; con saturación además, 15 s", async () => {
-    const quota = fakeCaller({ "groq/a": new LinkError("quota", "x", 429, 37), "gemini/b": new LinkError("quota", "x", 429, 12) });
-    const onlyQuota = await callChain(chainOf("groq/a", "gemini/b"), { groq: quota, gemini: quota }, request).catch((e: unknown) => e);
-    expect(onlyQuota).toMatchObject({ overloaded: false, retryAfterSeconds: 12 });
-
-    const mixed = fakeCaller({ "groq/a": new LinkError("quota", "x", 429, 37), "gemini/b": new LinkError("overloaded", "x", 503) });
-    const both = await callChain(chainOf("groq/a", "gemini/b"), { groq: mixed, gemini: mixed }, request).catch((e: unknown) => e);
-    expect(both).toMatchObject({ overloaded: true, retryAfterSeconds: 15 });
+  it("saturación o tiempo agotado: reintento a los 15 s sin contar como error", async () => {
+    const caller = fakeCaller({ opus: [new ModelError("timeout", "x")], sonnet: [new ModelError("quota", "x", 900)] });
+    expect(await callChain(["opus", "sonnet"], caller, request).catch((e: unknown) => e)).toMatchObject({
+      overloaded: true,
+      retryAfterSeconds: 15,
+    });
   });
 
-  it("si ninguno responde por motivos no pasajeros (404, 413, JSON), es un error con la lista", async () => {
-    const caller = fakeCaller({ "groq/a": new LinkError("too_large", "x", 413), "gemini/b": new LinkError("unavailable", "x", 404), "mistral/c": "{" });
-    const error = await callChain(chainOf("groq/a", "gemini/b", "mistral/c"), { groq: caller, gemini: caller, mistral: caller }, request).catch((e: unknown) => e);
+  it("modelo no disponible en todos: error con la lista", async () => {
+    const caller = fakeCaller({ opus: [new ModelError("unavailable", "no existe")] });
+    const error = await callChain(["opus"], caller, request).catch((e: unknown) => e);
     expect(error).not.toBeInstanceOf(RateLimitError);
-    expect((error as Error).message).toContain("groq/a (413), gemini/b (404, no disponible), mistral/c (JSON no válido)");
+    expect((error as Error).message).toContain("opus (no disponible)");
   });
 
-  it("un 400 propio de un modelo pasa al siguiente; sin conexión cuenta como pasajero", async () => {
-    const caller = fakeCaller({ "groq/a": new LinkError("rejected", "x", 400), "mistral/b": new LinkError("network", "fetch failed"), "gemini/c": ok });
-    const out = await callChain(chainOf("groq/a", "mistral/b", "gemini/c"), { groq: caller, mistral: caller, gemini: caller }, request);
-    expect(out.fallbackFrom).toEqual(["groq/a (400, petición rechazada)", "mistral/b (sin conexión)"]);
-
-    const down = fakeCaller({ "groq/a": new LinkError("network", "fetch failed") });
-    const error = await callChain(chainOf("groq/a"), { groq: down }, request).catch((e: unknown) => e);
-    expect(error).toMatchObject({ overloaded: true, retryAfterSeconds: 15 });
-  });
-
-  it("un error que no es de la API (fallo de programación) se lanza sin probar el resto", async () => {
-    const calls: string[] = [];
-    const caller = fakeCaller({ "groq/a": new Error("bug"), "gemini/b": ok }, calls);
-    await expect(callChain(chainOf("groq/a", "gemini/b"), { groq: caller, gemini: caller }, request)).rejects.toThrow("bug");
-    expect(calls).toEqual(["groq/a"]);
+  it("un fallo fatal (sin sesión, credencial de pago) se lanza sin probar el resto", async () => {
+    const calls: { model: string; prompt: string }[] = [];
+    const caller = fakeCaller({ opus: [new FatalLlmError("sin sesión")], sonnet: [ok] }, calls);
+    await expect(callChain(["opus", "sonnet"], caller, request)).rejects.toBeInstanceOf(FatalLlmError);
+    expect(calls).toHaveLength(1);
   });
 });
 
-describe("ChainProvider", () => {
-  const chains = { orchestrator: chainOf("groq/orq"), develop: chainOf("mistral/dev"), testing: chainOf("groq/test") };
+describe("ClaudeProvider", () => {
+  const models = { orchestrator: ["opus"], develop: ["sonnet-dev"], testing: ["sonnet-test"] };
+  const task = { position: 0, title: "t", description: "d", acceptance_criteria: ["c"], attempts: 0 };
 
-  it("cada agente usa su cadena", async () => {
-    const calls: string[] = [];
+  it("cada agente usa sus modelos", async () => {
     const answer = '{"tasks":[],"summary":"ok","changes":[],"passed":true,"results":[]}';
-    const caller = fakeCaller({ "groq/orq": answer, "mistral/dev": answer, "groq/test": answer }, calls);
-    const provider = new ChainProvider(chains, { groq: caller, mistral: caller });
-    const task = { position: 0, title: "t", description: "d", acceptance_criteria: ["c"], attempts: 0 };
+    const calls: { model: string; prompt: string }[] = [];
+    const caller = fakeCaller({ opus: [answer, answer], "sonnet-dev": [answer], "sonnet-test": [answer] }, calls);
+    const provider = new ClaudeProvider(models, caller);
     await provider.plan({ request: "x", files: {} });
     await provider.develop({ request: "x", task, feedback: null, files: {} });
     await provider.review({ request: "x", task, files: {} });
-    expect(await provider.summarize({ request: "x", tasks: [] })).toEqual({ summary: "ok", model: "groq/orq", fallbackFrom: [] });
-    expect(calls).toEqual(["groq/orq", "mistral/dev", "groq/test", "groq/orq"]);
+    expect(await provider.summarize({ request: "x", tasks: [] })).toEqual({ summary: "ok", model: "opus", fallbackFrom: [] });
+    expect(calls.map((c) => c.model)).toEqual(["opus", "sonnet-dev", "sonnet-test", "opus"]);
   });
 
   it("Develop: content null (delete) se convierte en un cambio sin contenido", async () => {
-    const caller = fakeCaller({
-      "mistral/dev": JSON.stringify({
-        summary: "s",
-        changes: [
-          { path: "a.html", action: "update", content: "<p>hola</p>" },
-          { path: "b.html", action: "delete", content: null },
-        ],
-      }),
+    const answer = JSON.stringify({
+      summary: "s",
+      changes: [
+        { path: "a.html", action: "update", content: "<p>hola</p>" },
+        { path: "b.html", action: "delete", content: null },
+      ],
     });
-    const provider = new ChainProvider(chains, { mistral: caller });
-    const task = { position: 0, title: "t", description: "d", acceptance_criteria: ["c"], attempts: 0 };
+    const provider = new ClaudeProvider(models, fakeCaller({ "sonnet-dev": [answer] }));
     const out = await provider.develop({ request: "x", task, feedback: null, files: {} });
     expect(out.changes).toEqual([
       { path: "a.html", action: "update", content: "<p>hola</p>" },
       { path: "b.html", action: "delete" },
     ]);
   });
+});
 
-  it("de extremo a extremo con fetch simulado: Groq da 413 y responde Mistral", async () => {
-    const urls: string[] = [];
-    const fetchImpl = (async (url: string) => {
-      urls.push(url);
-      if (url.includes("groq")) return new Response('{"error":{"message":"Request too large for model"}}', { status: 413 });
-      return Response.json({ choices: [{ message: { content: ok }, finish_reason: "stop" }] });
-    }) as unknown as typeof fetch;
-    const provider = new ChainProvider(
-      { ...chains, orchestrator: chainOf("groq/openai/gpt-oss-120b", "mistral/mistral-small-2603") },
-      {
-        groq: createOpenAICompatibleCaller("groq", "k1", fetchImpl),
-        mistral: createOpenAICompatibleCaller("mistral", "k2", fetchImpl),
-      },
-    );
-    expect(await provider.summarize({ request: "x", tasks: [] })).toEqual({
-      summary: "ok",
-      model: "mistral/mistral-small-2603",
-      fallbackFrom: ["groq/openai/gpt-oss-120b (413)"],
+describe("proveedor claude: suscripción, entorno y errores", () => {
+  const full: LlmRequest = { ...request, timeoutMs: 5000 };
+  const init = (extra: Record<string, unknown> = {}) =>
+    ({ type: "system", subtype: "init", apiKeySource: "none", tools: [], ...extra }) as unknown as SDKMessage;
+  const success = (text: string, extra: Record<string, unknown> = {}) =>
+    ({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: text,
+      usage: { input_tokens: 10, output_tokens: 5 },
+      ...extra,
+    }) as unknown as SDKMessage;
+
+  /** `query` falso: devuelve los mensajes dados y guarda las opciones con las que se llamó. */
+  function fakeQuery(messages: SDKMessage[], seen: Options[] = [], thrown?: Error) {
+    return (params: { prompt: string; options: Options }) => {
+      seen.push(params.options);
+      return (async function* () {
+        yield* messages;
+        if (thrown) throw thrown;
+      })();
+    };
+  }
+
+  const tokenEnv = {
+    CLAUDE_CODE_OAUTH_TOKEN: "token-de-prueba",
+    ANTHROPIC_API_KEY: "sk-de-pago",
+    ANTHROPIC_AUTH_TOKEN: "otro",
+    CLAUDE_CODE_USE_BEDROCK: "1",
+    SUPABASE_SERVICE_ROLE_KEY: "secreta",
+    PATH: "/usr/bin",
+    HOME: "/Users/ale",
+  };
+
+  it("entorno mínimo: sin claves de pago ni variables de la app; con token, HOME y config en un directorio propio", () => {
+    const env = subprocessEnv(tokenEnv, "token", "/tmp/equipo-agentes-claude");
+    expect(env).toMatchObject({
+      PATH: "/usr/bin",
+      HOME: "/tmp/equipo-agentes-claude",
+      CLAUDE_CONFIG_DIR: "/tmp/equipo-agentes-claude/.claude",
+      CLAUDE_CODE_OAUTH_TOKEN: "token-de-prueba",
     });
-    expect(urls).toEqual(["https://api.groq.com/openai/v1/chat/completions", "https://api.mistral.ai/v1/chat/completions"]);
+    for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "SUPABASE_SERVICE_ROLE_KEY"]) {
+      expect(env).not.toHaveProperty(name);
+    }
+  });
+
+  it("con la sesión del equipo pasa HOME (llavero) y nunca un token", () => {
+    const env = subprocessEnv({ ...tokenEnv, CLAUDE_CODE_OAUTH_TOKEN: undefined }, "session", "/tmp/x");
+    expect(env.HOME).toBe("/Users/ale");
+    expect(env).not.toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
+  });
+
+  it("en Vercel sin token es un error de configuración; fuera, usa la sesión", () => {
+    expect(() => claudeAuth({ VERCEL: "1" })).toThrow(FatalLlmError);
+    expect(claudeAuth({})).toBe("session");
+    expect(claudeAuth({ CLAUDE_CODE_OAUTH_TOKEN: "t" })).toBe("token");
+  });
+
+  it("solo generación: sin herramientas, sin ajustes, un turno, prompt literal y el entorno limpio", async () => {
+    const seen: Options[] = [];
+    const calls: CallInfo[] = [];
+    const caller = createClaudeCaller({ env: tokenEnv, run: fakeQuery([init(), success(ok)], seen), onCall: (c) => calls.push(c) });
+    expect(await caller("claude-sonnet-5-5", full)).toBe(ok);
+    expect(seen[0]).toMatchObject({
+      model: "claude-sonnet-5-5",
+      tools: [],
+      allowedTools: [],
+      mcpServers: {},
+      strictMcpConfig: true,
+      settingSources: [],
+      maxTurns: 1,
+      verbatimPrompts: true,
+      persistSession: false,
+      permissionMode: "dontAsk",
+    });
+    expect(seen[0].systemPrompt).toContain('"summary"');
+    expect(seen[0].env).not.toHaveProperty("ANTHROPIC_API_KEY");
+    expect(seen[0]).not.toHaveProperty("pathToClaudeCodeExecutable");
+    expect(calls).toEqual([expect.objectContaining({ model: "claude-sonnet-5-5", ok: true, inputTokens: 10, outputTokens: 5 })]);
+  });
+
+  it("corta si la credencial no es la suscripción, si hay herramientas o si responde sin init", async () => {
+    const run = (messages: SDKMessage[]) =>
+      createClaudeCaller({ env: tokenEnv, run: fakeQuery(messages) })("m", full).catch((e: unknown) => e);
+    expect(await run([init({ apiKeySource: "ANTHROPIC_API_KEY" }), success(ok)])).toMatchObject({
+      name: "FatalLlmError",
+      message: expect.stringContaining("no está usando la suscripción"),
+    });
+    expect(await run([init({ tools: ["Bash"] }), success(ok)])).toBeInstanceOf(FatalLlmError);
+    expect(await run([success(ok)])).toBeInstanceOf(FatalLlmError);
+  });
+
+  it("límite de uso agotado o uso extra de pago: espera hasta la renovación", async () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 600;
+    const rejected = { type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt, rateLimitType: "five_hour" } };
+    const overage = { type: "rate_limit_event", rate_limit_info: { status: "allowed", isUsingOverage: true, resetsAt } };
+    for (const event of [rejected, overage]) {
+      const error = await createClaudeCaller({ env: tokenEnv, run: fakeQuery([init(), event as unknown as SDKMessage, success(ok)]) })(
+        "m",
+        full,
+      ).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ModelError);
+      expect((error as ModelError).kind).toBe("quota");
+      expect((error as ModelError).retryAfterSeconds).toBeGreaterThan(590);
+    }
+  });
+
+  it("mapea los errores del CLI: saturado, límite, modelo inexistente, sin sesión, facturación", () => {
+    expect(classifyFailure("m", "API Error: 529 Overloaded", 529, "overloaded", null)).toMatchObject({ kind: "overloaded" });
+    expect(classifyFailure("m", "Claude AI usage limit reached", null, undefined, null)).toMatchObject({ kind: "quota", retryAfterSeconds: 60 });
+    expect(classifyFailure("m", "x", 404, "model_not_found", null)).toMatchObject({ kind: "unavailable" });
+    expect(classifyFailure("m", "Not logged in · Please run /login", null, undefined, null)).toBeInstanceOf(FatalLlmError);
+    expect(classifyFailure("m", "x", 401, "authentication_failed", null)).toBeInstanceOf(FatalLlmError);
+    expect(classifyFailure("m", "x", 402, "billing_error", null)).toBeInstanceOf(FatalLlmError);
+    expect(classifyFailure("m", "algo raro", 400, "invalid_request", null)).not.toBeInstanceOf(ModelError);
+  });
+
+  it("un resultado con error se traduce; si el CLI sale con error tras él, vale el resultado", async () => {
+    const failed = success("API Error: 529 Overloaded", { is_error: true, api_error_status: 529 });
+    const error = await createClaudeCaller({ env: tokenEnv, run: fakeQuery([init(), failed], [], new Error("exited with code 1")) })(
+      "m",
+      full,
+    ).catch((e: unknown) => e);
+    expect(error).toMatchObject({ kind: "overloaded" });
+  });
+
+  it("sin respuesta en el tiempo dado: ModelError timeout", async () => {
+    const hang = (params: { options: Options }) =>
+      (async function* () {
+        yield init();
+        await new Promise((_, reject) => params.options.abortController!.signal.addEventListener("abort", () => reject(new Error("aborted"))));
+      })() as AsyncIterable<SDKMessage>;
+    const error = await createClaudeCaller({ env: tokenEnv, run: hang })("m", { ...full, timeoutMs: 20 }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ kind: "timeout" });
   });
 });
 
-describe("proveedor compatible con OpenAI", () => {
-  const full: LlmRequest = { ...request, output: PLAN_SCHEMA, timeoutMs: 1000 };
+describe("CLI de Claude comprimido (Vercel)", () => {
+  afterEach(() => resetClaudeExecutable());
 
-  it("gpt-oss en Groq y Mistral: json_schema estricto y opciones extra del eslabón", () => {
-    const body = buildChatBody("groq", link("groq/openai/gpt-oss-120b?reasoning_effort=low"), full);
-    expect(body).toMatchObject({
-      model: "openai/gpt-oss-120b",
-      messages: [{ role: "system", content: "s" }, { role: "user", content: "p" }],
-      temperature: 0.3,
-      max_tokens: 100,
-      reasoning_effort: "low",
-      response_format: { type: "json_schema", json_schema: { name: "plan", schema: PLAN_SCHEMA.schema, strict: true } },
-    });
-    expect(buildChatBody("mistral", link("mistral/mistral-small-2603"), full).response_format.type).toBe("json_schema");
+  function packed(content: Buffer) {
+    const dir = mkdtempSync(join(tmpdir(), "cli-test-"));
+    writeFileSync(join(dir, "claude-linux-x64.br"), brotliCompressSync(content));
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ version: "9.9.9", size: content.length }));
+    return dir;
+  }
+
+  it("fuera de Linux o sin el archivo, el SDK usa su binario: no descomprime nada", async () => {
+    expect(await claudeExecutable({ platform: "darwin", packedDir: packed(Buffer.from("x")) })).toBeUndefined();
+    expect(await claudeExecutable({ platform: "linux", packedDir: mkdtempSync(join(tmpdir(), "vacio-")) })).toBeUndefined();
   });
 
-  it("otros modelos de Groq: json_object con el esquema en el mensaje de sistema; se puede forzar con ?format=", () => {
-    const body = buildChatBody("groq", link("groq/qwen/qwen3.8-27b"), full);
-    expect(body.response_format).toEqual({ type: "json_object" });
-    expect(body.messages[0].content).toContain('"acceptance_criteria"');
-    const forced = buildChatBody("mistral", link("mistral/m?format=json_object"), full);
-    expect(forced.response_format).toEqual({ type: "json_object" });
-    expect(forced).not.toHaveProperty("format");
+  it("en Linux lo descomprime una sola vez en /tmp, ejecutable, aunque lo pidan dos pasos a la vez", async () => {
+    const content = Buffer.from("#!/bin/sh\necho claude\n".repeat(1000));
+    const packedDir = packed(content);
+    const targetDir = mkdtempSync(join(tmpdir(), "destino-"));
+    const [a, b] = await Promise.all([
+      claudeExecutable({ platform: "linux", packedDir, targetDir }),
+      claudeExecutable({ platform: "linux", packedDir, targetDir }),
+    ]);
+    expect(a).toBe(join(targetDir, "claude-cli-9.9.9", "claude"));
+    expect(b).toBe(a);
+    expect(readFileSync(a!)).toEqual(content);
+    expect(statSync(a!).mode & 0o111).toBeTruthy();
   });
 
-  const respond = (status: number, body: string, headers: Record<string, string> = {}) =>
-    createOpenAICompatibleCaller("groq", "clave-secreta", (async () => new Response(body, { status, headers })) as unknown as typeof fetch);
-  const failure = (status: number, body: string, headers?: Record<string, string>) =>
-    respond(status, body, headers)(link("groq/m"), full).catch((e: unknown) => e as LinkError);
-
-  it("clasifica los errores HTTP", async () => {
-    expect(await failure(413, "Request too large")).toMatchObject({ kind: "too_large", status: 413 });
-    expect(await failure(503, "over capacity")).toMatchObject({ kind: "overloaded" });
-    expect(await failure(404, "model not found")).toMatchObject({ kind: "unavailable" });
-    expect(await failure(400, '{"error":{"code":"json_validate_failed"}}')).toMatchObject({ kind: "invalid_output" });
-    expect(await failure(400, '{"message":"Model not available in your subscription tier"}')).toMatchObject({ kind: "unavailable" });
-    expect(await failure(429, "rate limit", { "retry-after": "42" })).toMatchObject({ kind: "quota", retryAfterSeconds: 42 });
-    expect(await failure(429, "rate limit")).toMatchObject({ kind: "quota", retryAfterSeconds: 30 });
-    const bad = await failure(400, "bad request");
-    expect(bad).toMatchObject({ kind: "rejected", status: 400 });
-    expect((bad as LinkError).message).not.toContain("clave-secreta");
-    const offline = await createOpenAICompatibleCaller("groq", "k", (async () => {
-      throw new TypeError("fetch failed");
-    }) as unknown as typeof fetch)(link("groq/m"), full).catch((e: unknown) => e);
-    expect(offline).toMatchObject({ kind: "network" });
-  });
-
-  it("respuesta cortada por max_tokens o sin contenido: JSON no válido", async () => {
-    const cut = JSON.stringify({ choices: [{ message: { content: '{"tas' }, finish_reason: "length" }] });
-    expect(await failure(200, cut)).toMatchObject({ kind: "invalid_output" });
-    expect(await failure(200, JSON.stringify({ choices: [] }))).toMatchObject({ kind: "invalid_output" });
-  });
-
-  it("retry-after en segundos o como fecha", () => {
-    const now = Date.parse("2026-11-23T10:00:00Z");
-    expect(parseRetryAfter("7", now)).toBe(7);
-    expect(parseRetryAfter("Mon, 23 Nov 2026 10:01:30 GMT", now)).toBe(90);
-    expect(parseRetryAfter(null)).toBeUndefined();
-  });
-});
-
-describe("Gemini como eslabón", () => {
-  const body429 = JSON.stringify({ error: { code: 429, details: [{ retryDelay: "37s" }] } });
-  const geminiFailure = (error: Error) =>
-    createGeminiCaller("clave", async () => {
-      throw error;
-    })(link("gemini/g"), { ...request, timeoutMs: 1000 }).catch((e: unknown) => e as LinkError);
-
-  it("traduce los errores del SDK: 429 con retryDelay, 503 y 404", async () => {
-    expect(await geminiFailure(new ApiError({ message: body429, status: 429 }))).toMatchObject({ kind: "quota", retryAfterSeconds: 37 });
-    expect(await geminiFailure(new ApiError({ message: "overloaded", status: 503 }))).toMatchObject({ kind: "overloaded" });
-    expect(await geminiFailure(new ApiError({ message: "no longer available", status: 404 }))).toMatchObject({ kind: "unavailable" });
-    expect(await geminiFailure(new ApiError({ message: "bad", status: 400 }))).toMatchObject({ kind: "rejected" });
-  });
-
-  it("manda el esquema convertido y devuelve el texto", async () => {
-    let config: unknown;
-    const caller = createGeminiCaller("clave", (async (params: { config?: unknown }) => {
-      config = params.config;
-      return { text: ok };
-    }) as never);
-    expect(await caller(link("gemini/g"), { ...request, timeoutMs: 1000 })).toBe(ok);
-    expect(config).toMatchObject({ responseMimeType: "application/json", responseSchema: { type: "OBJECT", required: ["summary"] } });
-  });
-
-  it("usa 30 s si la API no indica retryDelay", () => {
-    expect(parseRetryDelay("sin pista")).toBe(30);
-    expect(parseRetryDelay('"retryDelay": "2.5s"')).toBe(3);
+  it("si el tamaño no cuadra, falla y se puede volver a intentar", async () => {
+    const packedDir = packed(Buffer.from("contenido"));
+    writeFileSync(join(packedDir, "meta.json"), JSON.stringify({ version: "1.0.0", size: 999 }));
+    const targetDir = mkdtempSync(join(tmpdir(), "destino-"));
+    await expect(claudeExecutable({ platform: "linux", packedDir, targetDir })).rejects.toThrow(/se esperaban 999/);
   });
 });
 
 describe("esquemas", () => {
-  it("un solo esquema plano, estricto y convertible a Gemini", () => {
-    const change = DEVELOP_SCHEMA.schema.properties!.changes.items!;
-    expect(change).toMatchObject({ additionalProperties: false, required: ["path", "action", "content"] });
-    expect(toGeminiSchema(change)).toMatchObject({
-      type: "OBJECT",
-      required: ["path", "action"],
-      properties: { content: { type: "STRING", nullable: true }, action: { enum: ["create", "update", "delete"] } },
-    });
-  });
-
   it("validación mínima de la forma", () => {
     const schema = DEVELOP_SCHEMA.schema;
     expect(shapeError({ summary: "s", changes: [{ path: "a", action: "delete" }] }, schema)).toBeNull();

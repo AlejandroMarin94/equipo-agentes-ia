@@ -1,10 +1,7 @@
-import { Type, type Schema } from "@google/genai";
-
 /**
- * Esquemas de salida de los agentes, en JSON Schema plano y una sola vez para todos los proveedores.
- * Escritos para el modo estricto de OpenAI/Groq/Mistral: todos los campos en `required`,
- * `additionalProperties: false` y los opcionales como `["string", "null"]`.
- * Gemini usa su propio formato: se convierten con `toGeminiSchema`.
+ * Esquemas de salida de los agentes, en JSON Schema plano: van en el prompt de sistema y la respuesta
+ * se valida contra ellos (`shapeError`). Todos los campos en `required`, `additionalProperties: false`
+ * y los opcionales como `["string", "null"]`.
  */
 export interface JsonSchema {
   type: "object" | "array" | "string" | "boolean" | ["string", "null"];
@@ -67,25 +64,9 @@ export const SUMMARY_SCHEMA: OutputSchema = {
 
 const nullable = (schema: JsonSchema) => Array.isArray(schema.type);
 
-/** Convierte el esquema plano al formato de `responseSchema` de Gemini. */
-export function toGeminiSchema(schema: JsonSchema): Schema {
-  const out: Schema = {};
-  const base = Array.isArray(schema.type) ? schema.type[0] : schema.type;
-  out.type = { object: Type.OBJECT, array: Type.ARRAY, string: Type.STRING, boolean: Type.BOOLEAN }[base];
-  if (nullable(schema)) out.nullable = true;
-  if (schema.enum) out.enum = schema.enum;
-  if (schema.items) out.items = toGeminiSchema(schema.items);
-  if (schema.properties) {
-    out.properties = Object.fromEntries(Object.entries(schema.properties).map(([k, v]) => [k, toGeminiSchema(v)]));
-    // Los anulables no se exigen: Gemini puede omitirlos en vez de devolver null.
-    out.required = (schema.required ?? []).filter((k) => !nullable(schema.properties![k]));
-  }
-  return out;
-}
-
 /**
  * Validación mínima de la forma: tipos, campos obligatorios y enums. Devuelve el primer problema o null.
- * Un campo anulable puede faltar (Gemini lo omite en vez de mandar null). Ignora campos de más.
+ * Un campo anulable puede faltar (equivale a null). Ignora campos de más.
  */
 export function shapeError(value: unknown, schema: JsonSchema, path = "respuesta"): string | null {
   if (value === null && nullable(schema)) return null;

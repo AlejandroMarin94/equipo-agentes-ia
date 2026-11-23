@@ -1,13 +1,14 @@
 /**
  * Ejecuta una petición completa con el motor real, sin Supabase ni navegador:
- * repositorio en memoria y el proveedor de LLM_PROVIDER (las cadenas LLM_CHAIN_* por defecto).
+ * repositorio en memoria y el proveedor de LLM_PROVIDER (Claude por defecto).
  *
  *   npx tsx scripts/run-local.ts ["petición"] [--out carpeta]
  *
- * Lee la configuración de .env.local (las claves no se imprimen). Imprime los eventos y el
- * estado de las tareas hasta done/failed y, con --out, guarda ahí la web resultante.
- * Cuenta las peticiones HTTP a Groq, Mistral y Gemini (respaldos y reintentos incluidos).
- * Se detiene (guardando lo hecho) si la API pide esperar más de 5 min o con Ctrl+C.
+ * Lee la configuración de .env.local o del entorno (el token no se imprime). Con Claude, usa
+ * CLAUDE_CODE_OAUTH_TOKEN si está y, si no, la sesión de Claude Code de este equipo.
+ * Imprime cada llamada a Claude (modelo, tiempo y tokens), los eventos y el estado de las tareas hasta
+ * done/failed y, con --out, guarda ahí la web resultante. Se detiene (guardando lo hecho) si hay que
+ * esperar más de 5 min por el límite de uso o con Ctrl+C.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -15,7 +16,7 @@ import { startRun, step } from "../lib/engine/engine";
 import { formatWaitUntil } from "../lib/format";
 import { MemoryRepository } from "../lib/engine/memory-repository";
 import { getProvider } from "../lib/llm";
-import { API_KEY_ENV } from "../lib/llm/chain";
+import type { CallInfo } from "../lib/llm/claude";
 
 try {
   process.loadEnvFile(".env.local");
@@ -32,50 +33,22 @@ const outIndex = args.indexOf("--out");
 const outDir = outIndex >= 0 ? args[outIndex + 1] : null;
 const request = args.filter((_, i) => i !== outIndex && i !== outIndex + 1)[0] ?? DEFAULT_REQUEST;
 
-const secrets = Object.values(API_KEY_ENV)
-  .map((name) => process.env[name]?.trim())
-  .filter((v): v is string => Boolean(v));
-const mask = (text: string) => secrets.reduce((acc, s) => acc.replaceAll(s, "***"), text);
-
-const API_HOSTS = { "generativelanguage.googleapis.com": "gemini", "api.groq.com": "groq", "api.mistral.ai": "mistral" };
-
-/** «proveedor/modelo» de una petición a la API: Gemini lo lleva en la URL; Groq y Mistral, en el cuerpo. */
-function modelOf(url: string, init?: RequestInit): string | null {
-  const host = Object.entries(API_HOSTS).find(([h]) => url.includes(h));
-  if (!host) return null;
-  if (host[1] === "gemini") return `gemini/${url.match(/models\/([^:/?]+)/)?.[1] ?? "?"}`;
-  try {
-    return `${host[1]}/${(JSON.parse(String(init?.body)) as { model?: string }).model ?? "?"}`;
-  } catch {
-    return `${host[1]}/?`;
-  }
-}
-
-// Cuenta las llamadas reales a la API (el SDK de Gemini y el proveedor compatible con OpenAI usan el fetch global).
-const apiCalls: string[] = [];
-const originalFetch = globalThis.fetch;
-globalThis.fetch = async (input, init) => {
-  const url = String(input instanceof Request ? input.url : input);
-  const model = modelOf(url, init);
-  if (!model) return originalFetch(input, init);
-  const sent = Date.now();
-  try {
-    const response = await originalFetch(input, init);
-    apiCalls.push(`${model} ${response.status}`);
-    console.log(`${" ".repeat(10)}API ${model} → ${response.status} en ${elapsed(sent)}`);
-    return response;
-  } catch (error) {
-    apiCalls.push(`${model} sin respuesta`);
-    console.log(`${" ".repeat(10)}API ${model} → sin respuesta en ${elapsed(sent)}`);
-    throw error;
-  }
-};
+const secret = process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
+const mask = (text: string) => (secret ? text.replaceAll(secret, "***") : text);
 
 const elapsed = (start: number) => `${((Date.now() - start) / 1000).toFixed(1)} s`;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const calls: CallInfo[] = [];
+function onCall(info: CallInfo) {
+  calls.push(info);
+  const tokens = info.outputTokens !== undefined ? ` · ${info.inputTokens ?? "?"} → ${info.outputTokens} tokens` : "";
+  const result = info.ok ? "OK" : `FALLO: ${mask(info.error ?? "")}`;
+  console.log(`${" ".repeat(10)}Claude ${info.model} → ${result} en ${(info.ms / 1000).toFixed(1)} s${tokens}`);
+}
+
 async function main() {
-  const provider = getProvider();
+  const provider = getProvider(process.env, { onCall });
   const repo = new MemoryRepository();
   const started = await startRun(repo, "local", request, { maxRunsPerDay: 100, maxRunsPerHour: 100 });
   if (!started.ok) throw new Error(started.error);
@@ -118,7 +91,7 @@ async function main() {
     await flush();
     if (result.done) return report();
     if (result.retryAfter && result.retryAfter > MAX_WAIT_SECONDS) {
-      return report(`la API pide esperar ${formatWaitUntil(result.retryAfter)} (cuota agotada)`);
+      return report(`hay que esperar ${formatWaitUntil(result.retryAfter)} (límite de uso de la suscripción)`);
     }
     if (result.retryAfter) await sleep(result.retryAfter * 1000 + 500);
   }
@@ -134,8 +107,14 @@ async function printReport(repo: MemoryRepository, runId: string, start: number,
     t.acceptance_criteria.forEach((c) => console.log(`       · ${c}`));
   }
   console.log(`Resumen: ${mask(run?.summary ?? "(sin resumen)")}`);
-  const byStatus = apiCalls.reduce<Record<string, number>>((acc, c) => ((acc[c] = (acc[c] ?? 0) + 1), acc), {});
-  console.log(`Llamadas a la API: ${apiCalls.length}`, byStatus);
+  const byModel = calls.reduce<Record<string, number>>((acc, c) => {
+    const key = `${c.model} ${c.ok ? "OK" : "fallo"}`;
+    acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
+  const seconds = calls.reduce((acc, c) => acc + c.ms, 0) / 1000;
+  const output = calls.reduce((acc, c) => acc + (c.outputTokens ?? 0), 0);
+  console.log(`Llamadas a Claude: ${calls.length} (${seconds.toFixed(0)} s en total, ${output} tokens de salida)`, byModel);
 
   if (outDir) {
     const files = await repo.getFiles(runId);

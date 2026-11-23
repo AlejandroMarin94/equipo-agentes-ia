@@ -3,7 +3,8 @@ import { runDeterministicChecks } from "@/lib/engine/checks";
 import { LIMITS, hourlyLimitReleaseAt, startRun, step } from "@/lib/engine/engine";
 import { MemoryRepository } from "@/lib/engine/memory-repository";
 import { MockProvider } from "@/lib/llm/mock";
-import { RateLimitError, type AgentProvider } from "@/lib/llm/types";
+import { FatalLlmError, RateLimitError, type AgentProvider } from "@/lib/llm/types";
+import { maxRunsPerDay, maxRunsPerHour } from "@/lib/env";
 import { TEMPLATE_FILES } from "@/lib/template";
 import type { RunStatus } from "@/lib/types";
 
@@ -65,6 +66,13 @@ describe("startRun", () => {
     const oldest = new Date([...repo.runs.values()][0].created_at);
     const later = new Date(oldest.getTime() + 61 * 60 * 1000);
     expect((await startRun(repo, "eva", "petición tres", { ...limits, now: later })).ok).toBe(true);
+  });
+
+  it("límites por defecto: 3 ejecuciones por hora entre todos y 10 por usuario al día", () => {
+    expect(maxRunsPerHour({})).toBe(3);
+    expect(maxRunsPerDay({})).toBe(10);
+    expect(maxRunsPerHour({ MAX_RUNS_PER_HOUR: "5" })).toBe(5);
+    expect(maxRunsPerDay({ MAX_RUNS_PER_DAY: "0" })).toBe(10);
   });
 
   it("calcula cuándo queda libre un hueco del límite por hora", () => {
@@ -162,7 +170,7 @@ describe("modelo que responde", () => {
     const mock = new MockProvider();
     const provider = providerWith({
       plan: async (i) => ({ ...(await mock.plan(i)), model: "m-orq" }),
-      develop: async (i) => ({ ...(await mock.develop(i)), model: "m-2", fallbackFrom: ["m-dev (503)"] }),
+      develop: async (i) => ({ ...(await mock.develop(i)), model: "m-2", fallbackFrom: ["m-dev (saturado)"] }),
     });
     await step(repo, provider, runId); // plan
     await step(repo, provider, runId); // develop
@@ -170,7 +178,7 @@ describe("modelo que responde", () => {
     const change = repo.events.find((e) => e.kind === "change");
     expect(plan?.payload).toMatchObject({ model: "m-orq" });
     expect(plan?.payload).not.toHaveProperty("fallbackFrom");
-    expect(change?.payload).toMatchObject({ model: "m-2", fallbackFrom: ["m-dev (503)"] });
+    expect(change?.payload).toMatchObject({ model: "m-2", fallbackFrom: ["m-dev (saturado)"] });
   });
 });
 
@@ -241,8 +249,8 @@ describe("bucle fallo → reintento → bloqueo", () => {
   });
 });
 
-describe("límites de la API, errores y bloqueo", () => {
-  it("una espera larga (cuota diaria) se anuncia con horas y la hora de Madrid, no en segundos", async () => {
+describe("límites de uso, errores y bloqueo", () => {
+  it("una espera larga (límite de uso) se anuncia con horas y la hora de Madrid, no en segundos", async () => {
     const repo = new MemoryRepository();
     const runId = await newRun(repo, "Añade un modo oscuro");
     const provider = providerWith({
@@ -253,11 +261,11 @@ describe("límites de la API, errores y bloqueo", () => {
     const result = await step(repo, provider, runId, () => new Date("2026-11-23T10:00:00Z"));
     expect(result.retryAfter).toBe(44_520);
     expect(repo.events.at(-1)?.message).toBe(
-      "Cuota de la API agotada hasta las 23:22 (hora de Madrid); reintento en 12 h 22 min.",
+      "Límite de uso de la suscripción alcanzado hasta las 23:22 (hora de Madrid); reintento en 12 h 22 min.",
     );
   });
 
-  it("ante un 429 no rompe el run: pide esperar, lo registra y lo reintenta después", async () => {
+  it("ante el límite de uso no rompe el run: pide esperar, lo registra y lo reintenta después", async () => {
     const repo = new MemoryRepository();
     const runId = await newRun(repo, "Añade un modo oscuro");
     const mock = new MockProvider();
@@ -282,6 +290,20 @@ describe("límites de la API, errores y bloqueo", () => {
 
     clock = new Date(clock.getTime() + 13_000);
     expect((await step(repo, provider, runId, now)).status).toBe("developing");
+  });
+
+  it("un fallo fatal (sin sesión o credencial de pago) marca el run como failed en el acto", async () => {
+    const repo = new MemoryRepository();
+    const runId = await newRun(repo, "Añade un modo oscuro");
+    const provider = providerWith({
+      plan: async () => {
+        throw new FatalLlmError("Falta CLAUDE_CODE_OAUTH_TOKEN");
+      },
+    });
+    expect(await step(repo, provider, runId)).toMatchObject({ status: "failed", done: true });
+    const run = await repo.getRun(runId);
+    expect(run?.summary).toBe("La ejecución se ha detenido: Falta CLAUDE_CODE_OAUTH_TOKEN");
+    expect(run?.locked_until).toBeNull();
   });
 
   it("no ejecuta dos pasos a la vez del mismo run", async () => {

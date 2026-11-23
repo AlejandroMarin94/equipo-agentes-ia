@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { startRun } from "@/lib/engine/engine";
-import { maxRunsPerDay } from "@/lib/env";
+import { maxRunsPerDay, maxRunsPerHour } from "@/lib/env";
 import { SupabaseRepository } from "@/lib/supabase/repository";
 import { createClient, getUser } from "@/lib/supabase/server";
 
@@ -33,6 +33,7 @@ export async function createRun(_prev: FormState, formData: FormData): Promise<F
 
   const result = await startRun(new SupabaseRepository(), user.id, String(formData.get("request") ?? ""), {
     maxRunsPerDay: maxRunsPerDay(),
+    maxRunsPerHour: maxRunsPerHour(),
   });
   if (!result.ok) return { error: result.error };
   redirect(`/runs/${result.runId}`);

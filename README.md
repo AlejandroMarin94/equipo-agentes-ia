@@ -145,6 +145,7 @@ El script lee `NEXT_PUBLIC_SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` de `.env.
 | `GEMINI_MODEL` | Opcional: respaldo común para el agente que no tenga su variable |
 | `LLM_PROVIDER` | `gemini` (por defecto) o `mock` |
 | `MAX_RUNS_PER_DAY` | Ejecuciones por usuario cada 24 h, por defecto 15 |
+| `MAX_RUNS_PER_HOUR` | Ejecuciones de todos los usuarios juntos en la última hora, por defecto 4 |
 | `MOCK_DELAY_MS` | Opcional, retardo simulado del modo mock (por defecto 1500 ms) |
 
 ## Despliegue
@@ -171,11 +172,11 @@ npm run lint
 npm run build
 ```
 
-Los tests cubren la lógica pura con el proveedor mock y un repositorio en memoria (detrás de la misma interfaz que el de Supabase): transiciones de la máquina de estados, aplicación de cambios a los archivos, comprobaciones automáticas de Testing, el bucle fallo → reintento → bloqueo, el 429 y el 503 de Gemini, el bloqueo entre pasos simultáneos (incluida la relectura del run tras bloquearlo), los pasos cortados a mitad y los errores repetidos.
+Los tests cubren la lógica pura con el proveedor mock y un repositorio en memoria (detrás de la misma interfaz que el de Supabase): transiciones de la máquina de estados, aplicación de cambios a los archivos, comprobaciones automáticas de Testing, el bucle fallo → reintento → bloqueo, los límites por usuario y global por hora, el modelo de cada agente, el 429 y el 503 de Gemini, el bloqueo entre pasos simultáneos (incluida la relectura del run tras bloquearlo), los pasos cortados a mitad y los errores repetidos.
 
 ## Límites conocidos
 
-- **Cuota gratuita de Gemini:** pocas peticiones por minuto y por día. Una ejecución hace entre ~5 y ~32 llamadas. Para protegerla: máximo 5 tareas por ejecución, 3 intentos por tarea y `MAX_RUNS_PER_DAY` ejecuciones por usuario. Si se agota la cuota diaria, la ejecución queda esperando y reintentando mientras la página esté abierta.
+- **Cuota gratuita de Gemini:** pocas peticiones por minuto y por día. Una ejecución hace entre ~5 y ~32 llamadas. Para protegerla: máximo 5 tareas por ejecución, 3 intentos por tarea, `MAX_RUNS_PER_DAY` ejecuciones por usuario cada 24 h y `MAX_RUNS_PER_HOUR` ejecuciones en la última hora entre todos los usuarios (la cuota es de la clave, no de cada usuario). Al llegar al límite por hora, el formulario dice a qué hora (de Madrid) queda libre el siguiente hueco. Si se agota la cuota diaria, la ejecución queda esperando y reintentando mientras la página esté abierta.
 - **El motor avanza mientras la página está abierta.** Si se cierra, la ejecución se queda en su estado y continúa al volver a abrirla. Para que avanzara sola haría falta una cola o un cron (fuera del plan gratuito y del alcance de la prueba).
 - **Develop devuelve archivos completos**, no diffs. Es lo más fiable con webs pequeñas como esta; con archivos grandes habría que pasar a parches.
 - **Las comprobaciones automáticas son heurísticas** (sin navegador real): detectan HTML roto, enlaces rotos y errores de sintaxis, pero no errores en tiempo de ejecución ni problemas visuales. Esa parte la cubre la revisión con IA, que puede equivocarse.

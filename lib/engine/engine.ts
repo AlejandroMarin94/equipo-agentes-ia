@@ -41,6 +41,21 @@ function toTaskInput(task: Task): TaskInput {
   };
 }
 
+const HOUR_MS = 3600 * 1000;
+
+/**
+ * Cuándo queda libre un hueco del límite global por hora: cuando la ejecución
+ * que sobra más antigua sale de la ventana. `creations` va de más antigua a más reciente.
+ */
+export function hourlyLimitReleaseAt(creations: Date[], maxRunsPerHour: number): Date | null {
+  if (creations.length < maxRunsPerHour) return null;
+  return new Date(creations[creations.length - maxRunsPerHour].getTime() + HOUR_MS);
+}
+
+function formatMadridTime(date: Date): string {
+  return new Intl.DateTimeFormat("es-ES", { timeZone: "Europe/Madrid", hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 500);
 
 /** Crea un run nuevo con su copia de la web de partida. */
@@ -48,7 +63,7 @@ export async function startRun(
   repo: Repository,
   userId: string,
   rawRequest: string,
-  options: { maxRunsPerDay: number; now?: Date },
+  options: { maxRunsPerDay: number; maxRunsPerHour: number; now?: Date },
 ): Promise<{ ok: true; runId: string } | { ok: false; error: string }> {
   const request = rawRequest.trim();
   if (request.length < LIMITS.requestMinLength || request.length > LIMITS.requestMaxLength) {
@@ -63,6 +78,16 @@ export async function startRun(
     return {
       ok: false,
       error: `Has alcanzado el límite de ${options.maxRunsPerDay} ejecuciones en 24 horas (protege la cuota gratuita de la API).`,
+    };
+  }
+  // Límite global: la cuota gratuita de Gemini es una sola para todos los usuarios.
+  const lastHour = await repo.listRunCreationsSince(new Date(now.getTime() - HOUR_MS));
+  const releaseAt = hourlyLimitReleaseAt(lastHour, options.maxRunsPerHour);
+  if (releaseAt) {
+    const minutes = Math.max(1, Math.ceil((releaseAt.getTime() - now.getTime()) / 60_000));
+    return {
+      ok: false,
+      error: `Se ha alcanzado el límite de ${options.maxRunsPerHour} ejecuciones por hora entre todos los usuarios (protege la cuota gratuita de la API). Podrás lanzar otra a las ${formatMadridTime(releaseAt)} (hora de Madrid), dentro de ${minutes} min.`,
     };
   }
 

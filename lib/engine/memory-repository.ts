@@ -34,6 +34,13 @@ export class MemoryRepository implements Repository {
     return [...this.runs.values()].filter((r) => r.user_id === userId && new Date(r.created_at) >= since).length;
   }
 
+  async listRunCreationsSince(since: Date) {
+    return [...this.runs.values()]
+      .map((r) => new Date(r.created_at))
+      .filter((d) => d >= since)
+      .sort((a, b) => a.getTime() - b.getTime());
+  }
+
   async getRun(runId: string) {
     const run = this.runs.get(runId);
     return run ? { ...run } : null;

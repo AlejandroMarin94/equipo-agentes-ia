@@ -31,6 +31,18 @@ export class SupabaseRepository implements Repository {
     return count ?? 0;
   }
 
+  async listRunCreationsSince(since: Date) {
+    const data = check(
+      await this.db
+        .from("runs")
+        .select("created_at")
+        .gte("created_at", since.toISOString())
+        .order("created_at", { ascending: true }),
+      "contar runs de la última hora",
+    ) as { created_at: string }[];
+    return data.map((r) => new Date(r.created_at));
+  }
+
   async getRun(runId: string) {
     return check(await this.db.from("runs").select("*").eq("id", runId).maybeSingle(), "leer run") as Run | null;
   }

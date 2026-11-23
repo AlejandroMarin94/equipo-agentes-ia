@@ -8,6 +8,12 @@ export function supabasePublicEnv() {
   return { url, key };
 }
 
+/** Ejecuciones de todos los usuarios juntos en la última hora. */
+export function maxRunsPerHour(): number {
+  const value = Number(process.env.MAX_RUNS_PER_HOUR);
+  return Number.isFinite(value) && value > 0 ? value : 4;
+}
+
 export function maxRunsPerDay(): number {
   const value = Number(process.env.MAX_RUNS_PER_DAY);
   return Number.isFinite(value) && value > 0 ? value : 15;

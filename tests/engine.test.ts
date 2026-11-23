@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { runDeterministicChecks } from "@/lib/engine/checks";
-import { LIMITS, startRun, step } from "@/lib/engine/engine";
+import { LIMITS, hourlyLimitReleaseAt, startRun, step } from "@/lib/engine/engine";
 import { MemoryRepository } from "@/lib/engine/memory-repository";
 import { MockProvider } from "@/lib/llm/mock";
 import { RateLimitError, type AgentProvider } from "@/lib/llm/types";
@@ -8,7 +8,7 @@ import { TEMPLATE_FILES } from "@/lib/template";
 import type { RunStatus } from "@/lib/types";
 
 async function newRun(repo: MemoryRepository, request: string) {
-  const result = await startRun(repo, "user-1", request, { maxRunsPerDay: 15 });
+  const result = await startRun(repo, "user-1", request, { maxRunsPerDay: 15, maxRunsPerHour: 100 });
   if (!result.ok) throw new Error(result.error);
   return result.runId;
 }
@@ -46,12 +46,33 @@ describe("startRun", () => {
 
   it("valida la longitud de la petición y el límite diario", async () => {
     const repo = new MemoryRepository();
-    expect((await startRun(repo, "u", "hola", { maxRunsPerDay: 2 })).ok).toBe(false);
-    await startRun(repo, "u", "petición uno", { maxRunsPerDay: 2 });
-    await startRun(repo, "u", "petición dos", { maxRunsPerDay: 2 });
-    const third = await startRun(repo, "u", "petición tres", { maxRunsPerDay: 2 });
+    expect((await startRun(repo, "u", "hola", { maxRunsPerDay: 2, maxRunsPerHour: 100 })).ok).toBe(false);
+    await startRun(repo, "u", "petición uno", { maxRunsPerDay: 2, maxRunsPerHour: 100 });
+    await startRun(repo, "u", "petición dos", { maxRunsPerDay: 2, maxRunsPerHour: 100 });
+    const third = await startRun(repo, "u", "petición tres", { maxRunsPerDay: 2, maxRunsPerHour: 100 });
     expect(third).toEqual({ ok: false, error: expect.stringContaining("límite de 2") });
-    expect((await startRun(repo, "otro", "petición tres", { maxRunsPerDay: 2 })).ok).toBe(true);
+    expect((await startRun(repo, "otro", "petición tres", { maxRunsPerDay: 2, maxRunsPerHour: 100 })).ok).toBe(true);
+  });
+
+  it("aplica el límite global por hora a todos los usuarios y dice cuándo se libera", async () => {
+    const repo = new MemoryRepository();
+    const limits = { maxRunsPerDay: 15, maxRunsPerHour: 2 };
+    expect((await startRun(repo, "ana", "petición uno", limits)).ok).toBe(true);
+    expect((await startRun(repo, "luis", "petición dos", limits)).ok).toBe(true);
+    const third = await startRun(repo, "eva", "petición tres", limits);
+    expect(third).toEqual({ ok: false, error: expect.stringMatching(/2 ejecuciones por hora.*a las \d{2}:\d{2}.*dentro de \d+ min/) });
+
+    const oldest = new Date([...repo.runs.values()][0].created_at);
+    const later = new Date(oldest.getTime() + 61 * 60 * 1000);
+    expect((await startRun(repo, "eva", "petición tres", { ...limits, now: later })).ok).toBe(true);
+  });
+
+  it("calcula cuándo queda libre un hueco del límite por hora", () => {
+    const at = (min: number) => new Date(Date.UTC(2026, 10, 23, 10, min));
+    expect(hourlyLimitReleaseAt([at(0), at(10)], 4)).toBeNull();
+    expect(hourlyLimitReleaseAt([at(0), at(10), at(20), at(30)], 4)).toEqual(new Date(Date.UTC(2026, 10, 23, 11, 0)));
+    // Con más de las permitidas (carreras), hay que esperar a que salgan las que sobran.
+    expect(hourlyLimitReleaseAt([at(0), at(10), at(20), at(30), at(40)], 4)).toEqual(new Date(Date.UTC(2026, 10, 23, 11, 10)));
   });
 });
 

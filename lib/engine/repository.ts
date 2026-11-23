@@ -26,6 +26,8 @@ export type TaskPatch = Partial<Pick<Task, "status" | "attempts" | "last_feedbac
 export interface Repository {
   createRun(userId: string, request: string): Promise<string>;
   countRunsSince(userId: string, since: Date): Promise<number>;
+  /** Fechas de creación de los runs de TODOS los usuarios desde `since`, de la más antigua a la más reciente. */
+  listRunCreationsSince(since: Date): Promise<Date[]>;
   getRun(runId: string): Promise<Run | null>;
   /** Bloquea el run hasta `until` si no está bloqueado ni terminado. Devuelve si lo ha conseguido. */
   tryLock(runId: string, until: Date, now: Date): Promise<boolean>;

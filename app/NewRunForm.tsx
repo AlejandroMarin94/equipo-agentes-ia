@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useState } from "react";
+import { LIMITS } from "@/lib/limits";
 import { createRun, type FormState } from "./actions";
 
 const EXAMPLES = [
@@ -29,8 +30,8 @@ export function NewRunForm() {
         name="request"
         rows={3}
         required
-        minLength={5}
-        maxLength={500}
+        minLength={LIMITS.requestMinLength}
+        maxLength={LIMITS.requestMaxLength}
         value={request}
         onChange={(e) => setRequest(e.target.value)}
         placeholder="Por ejemplo: añade una página de contacto a esta web"

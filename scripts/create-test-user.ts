@@ -1,8 +1,8 @@
 /**
  * Crea (o actualiza la contraseña de) el usuario de prueba en Supabase Auth.
  *
- *   npx tsx scripts/create-test-user.ts <email> <contraseña>
- *   TEST_USER_EMAIL=... TEST_USER_PASSWORD=... npx tsx scripts/create-test-user.ts
+ *   npm run create-test-user -- <email> <contraseña>
+ *   TEST_USER_EMAIL=... TEST_USER_PASSWORD=... npm run create-test-user   # sin dejar la contraseña en los argumentos
  *
  * Lee NEXT_PUBLIC_SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY del entorno o de .env.local.
  */
@@ -21,7 +21,7 @@ async function main() {
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!email || !password) {
-    throw new Error("Uso: npx tsx scripts/create-test-user.ts <email> <contraseña>");
+    throw new Error("Uso: npm run create-test-user -- <email> <contraseña> (o TEST_USER_EMAIL y TEST_USER_PASSWORD en el entorno)");
   }
   if (password.length < 8) throw new Error("La contraseña debe tener al menos 8 caracteres.");
   if (!url || !serviceKey) throw new Error("Faltan NEXT_PUBLIC_SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY.");

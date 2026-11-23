@@ -2,6 +2,9 @@
   "name": "equipo-agentes-ia",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "node scripts/pack-claude-cli.mjs && next build",
@@ -9,6 +12,8 @@
     "lint": "eslint",
     "test": "vitest run",
     "create-test-user": "tsx scripts/create-test-user.ts",
+    "check-claude": "tsx scripts/check-claude.ts",
+    "run-local": "tsx scripts/run-local.ts",
     "pack-claude-cli": "node scripts/pack-claude-cli.mjs --force"
   },
   "dependencies": {

@@ -2,7 +2,7 @@
  * Comprueba que Claude responde por la suscripción con cada modelo de los agentes: una llamada mínima
  * con el esquema real del Orquestador por modelo.
  *
- *   npx tsx scripts/check-claude.ts
+ *   npm run check-claude
  *
  * Lee CLAUDE_CODE_OAUTH_TOKEN y CLAUDE_MODELS_* de .env.local o del entorno (el token no se imprime);
  * sin token, usa la sesión de Claude Code de este equipo. Por modelo: OK/FALLO, tiempo y motivo.

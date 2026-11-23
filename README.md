@@ -230,4 +230,9 @@ npm run build
 
 ## Cómo se ha programado con Claude Code
 
-<!-- TODO: lo completa Alejandro -->
+Todo el proyecto se ha hecho con Claude Code, organizado como un pequeño equipo de agentes, el mismo patrón que pide la prueba:
+
+- **Arquitecto (sesión principal, Claude Opus):** analiza el enunciado, toma las decisiones técnicas (Supabase, motor de un paso por petición para no chocar con el límite de tiempo de Vercel, vista previa aislada en un iframe con sandbox) y escribe encargos cerrados para los demás agentes, con contrato, reglas y criterios de aceptación.
+- **Implementador (subagente Opus, en segundo plano):** desarrolla cada encargo en la rama `dev` con commits pequeños y pasa lint, tests y build antes de entregar.
+- **Auditores independientes (subagentes):** revisan cada entrega contra el encargo sin conocer las conclusiones del implementador. Encontraron y se corrigieron, por ejemplo, una carrera entre dos pasos simultáneos del motor y que los límites de uso se podían saltar con peticiones en paralelo. Antes de entregar se hizo una auditoría de seguridad y otra de limpieza del código.
+- **Validación con datos reales:** cada cambio de modelo se probó con ejecuciones reales de extremo a extremo antes de decidir. El historial de git recoge ese recorrido.

@@ -8,7 +8,7 @@ export const MAX_SITE_SIZE = 300_000;
 
 const siteSize = (files: SiteFiles) => Object.values(files).reduce((total, content) => total + content.length, 0);
 
-export interface ApplyResult {
+interface ApplyResult {
   files: SiteFiles;
   applied: FileChange[];
   rejected: { change: FileChange; reason: string }[];

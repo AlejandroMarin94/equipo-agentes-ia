@@ -15,7 +15,7 @@ export const DEFAULT_MODELS: Record<AgentName, string> = {
   testing: "claude-sonnet-5-5",
 };
 
-export const MODELS_ENV: Record<AgentName, string> = {
+const MODELS_ENV: Record<AgentName, string> = {
   orchestrator: "CLAUDE_MODELS_ORCHESTRATOR",
   develop: "CLAUDE_MODELS_DEVELOP",
   testing: "CLAUDE_MODELS_TESTING",
@@ -47,7 +47,7 @@ export type ModelCaller = (model: string, request: LlmRequest) => Promise<string
  * pronto); quota espera a que se renueve el límite de uso; unavailable e invalid_output son propios
  * del modelo. Lo que no tiene arreglo (sin sesión, credencial de pago) es FatalLlmError y no pasa por aquí.
  */
-export type FailureKind = "overloaded" | "timeout" | "quota" | "unavailable" | "invalid_output";
+type FailureKind = "overloaded" | "timeout" | "quota" | "unavailable" | "invalid_output";
 
 export class ModelError extends Error {
   constructor(
@@ -70,9 +70,9 @@ const FAILURE_LABEL: Record<FailureKind, string> = {
 
 // Tiempo total de una llamada, respaldos incluidos. Por debajo de maxDuration (300 s)
 // para que el paso tenga margen de guardar el error.
-export const REQUEST_TIMEOUT_MS = 240_000;
+const REQUEST_TIMEOUT_MS = 240_000;
 // Tiempo máximo de cada intento: Develop devuelve archivos completos y puede tardar más de un minuto.
-export const ATTEMPT_TIMEOUT_MS = 180_000;
+const ATTEMPT_TIMEOUT_MS = 180_000;
 // Sin al menos este margen no se prueba el siguiente intento.
 const MIN_ATTEMPT_MS = 30_000;
 export const DEFAULT_RETRY_SECONDS = 60;
@@ -99,7 +99,7 @@ export function parseOutput<T>(text: string, output: JsonSchema): T {
 }
 
 /** El prompt del segundo intento cuando la respuesta no era JSON válido. */
-export function correctionPrompt(prompt: string, problem: string): string {
+function correctionPrompt(prompt: string, problem: string): string {
   return `${prompt}\n\nTu respuesta anterior no era válida (${problem}). Responde de nuevo SOLO con el objeto JSON que sigue el esquema, sin texto alrededor.`;
 }
 

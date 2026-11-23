@@ -14,7 +14,7 @@ import { createBrotliDecompress } from "node:zlib";
  * no hay nada que descomprimir: el SDK usa el binario de su paquete para la plataforma.
  */
 
-export const PACKED_DIR = join(process.cwd(), ".claude-cli");
+const PACKED_DIR = join(process.cwd(), ".claude-cli");
 const PACKED_FILE = "claude-linux-x64.br";
 
 interface Meta {

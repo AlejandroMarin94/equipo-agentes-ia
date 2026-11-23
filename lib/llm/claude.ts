@@ -29,7 +29,7 @@ import { FatalLlmError, describeError } from "./types";
  * de Claude Code del equipo. Con token, HOME y CLAUDE_CONFIG_DIR van a un directorio propio en /tmp.
  */
 
-export const OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
+const OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 
 /** Lo único del entorno de la app que necesita el CLI. */
 const ALLOWED_ENV = [
@@ -66,7 +66,7 @@ export function claudeAuth(env: Env): ClaudeAuth {
 }
 
 /** Directorio vacío y fijo: cwd del CLI (y su HOME con token), sin el código de la app ni configuraciones. */
-export function workDir(base = tmpdir()): string {
+function workDir(base = tmpdir()): string {
   const dir = join(base, "equipo-agentes-claude");
   mkdirSync(dir, { recursive: true });
   return dir;
@@ -100,7 +100,7 @@ export function subprocessEnv(env: Env, auth: ClaudeAuth, home: string): Record<
   return out;
 }
 
-export function claudeOptions(
+function claudeOptions(
   model: string,
   request: LlmRequest,
   extra: { env: Record<string, string>; cwd: string; executable?: string; abortController: AbortController },

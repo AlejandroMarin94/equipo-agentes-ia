@@ -10,7 +10,7 @@ import { LONG_WAIT_SECONDS, formatMadridTime, formatWait } from "../format";
 
 export { LIMITS };
 
-export interface StepResult {
+interface StepResult {
   status: RunStatus;
   done: boolean;
   /** El paso no se ha ejecutado porque otro paso del mismo run está en curso. */

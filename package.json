@@ -2,16 +2,22 @@
   "name": "equipo-agentes-ia",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/pack-claude-cli.mjs && next build",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "create-test-user": "tsx scripts/create-test-user.ts"
+    "create-test-user": "tsx scripts/create-test-user.ts",
+    "check-claude": "tsx scripts/check-claude.ts",
+    "run-local": "tsx scripts/run-local.ts",
+    "pack-claude-cli": "node scripts/pack-claude-cli.mjs --force"
   },
   "dependencies": {
-    "@google/genai": "^3.6.1",
+    "@anthropic-ai/claude-agent-sdk": "0.3.330",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.119.2",
     "next": "16.4.6",

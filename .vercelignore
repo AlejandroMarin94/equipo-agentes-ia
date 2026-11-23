@@ -1,0 +1,6 @@
+.env*
+!.env.example
+.claude-cli
+.next
+node_modules
+supabase/.temp

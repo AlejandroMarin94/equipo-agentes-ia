@@ -1,0 +1,135 @@
+/**
+ * Ejecuta una petición completa con el motor real, sin Supabase ni navegador:
+ * repositorio en memoria y el proveedor de LLM_PROVIDER (Claude por defecto).
+ *
+ *   npm run run-local -- ["petición"] [--out carpeta]
+ *
+ * Lee la configuración de .env.local o del entorno (el token no se imprime). Con Claude, usa
+ * CLAUDE_CODE_OAUTH_TOKEN si está y, si no, la sesión de Claude Code de este equipo.
+ * Imprime cada llamada a Claude (modelo, tiempo y tokens), los eventos y el estado de las tareas hasta
+ * done/failed y, con --out, guarda ahí la web resultante. Se detiene (guardando lo hecho) si hay que
+ * esperar más de 5 min por el límite de uso o con Ctrl+C.
+ */
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { startRun, step } from "../lib/engine/engine";
+import { formatWaitUntil } from "../lib/format";
+import { MemoryRepository } from "../lib/engine/memory-repository";
+import { getProvider } from "../lib/llm";
+import type { CallInfo } from "../lib/llm/claude";
+
+try {
+  process.loadEnvFile(".env.local");
+} catch {
+  // Sin .env.local: se usan las variables del entorno.
+}
+
+const MAX_STEPS = 80;
+const MAX_WAIT_SECONDS = 300;
+const DEFAULT_REQUEST = "Añade una página de contacto con formulario";
+
+const args = process.argv.slice(2);
+const outIndex = args.indexOf("--out");
+const outDir = outIndex >= 0 ? args[outIndex + 1] : null;
+const request = args.filter((_, i) => outIndex < 0 || (i !== outIndex && i !== outIndex + 1))[0] ?? DEFAULT_REQUEST;
+
+const secret = process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
+const mask = (text: string) => (secret ? text.replaceAll(secret, "***") : text);
+
+const elapsed = (start: number) => `${((Date.now() - start) / 1000).toFixed(1)} s`;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const calls: CallInfo[] = [];
+function onCall(info: CallInfo) {
+  calls.push(info);
+  const tokens = info.outputTokens !== undefined ? ` · ${info.inputTokens ?? "?"} → ${info.outputTokens} tokens` : "";
+  const result = info.ok ? "OK" : `FALLO: ${mask(info.error ?? "")}`;
+  console.log(`${" ".repeat(10)}Claude ${info.model} → ${result} en ${(info.ms / 1000).toFixed(1)} s${tokens}`);
+}
+
+async function main() {
+  const provider = getProvider(process.env, { onCall });
+  const repo = new MemoryRepository();
+  const started = await startRun(repo, "local", request, { maxRunsPerDay: 100, maxRunsPerHour: 100 });
+  if (!started.ok) throw new Error(started.error);
+  const runId = started.runId;
+  const start = Date.now();
+  console.log(`Proveedor: ${provider.name} · Petición: «${request}»\n`);
+
+  let printed = 0;
+  let lastBoard = "";
+  const flush = async () => {
+    for (const event of repo.events.slice(printed)) {
+      const payload = event.payload as { model?: string; fallbackFrom?: string[] } | null;
+      const model = payload?.model
+        ? ` [${payload.model}${payload.fallbackFrom?.length ? `, respaldo tras ${payload.fallbackFrom.join(", ")}` : ""}]`
+        : "";
+      console.log(`[${elapsed(start).padStart(7)}] ${event.agent.padEnd(12)} ${event.kind.padEnd(10)} ${mask(event.message)}${model}`);
+    }
+    printed = repo.events.length;
+    const tasks = await repo.listTasks(runId);
+    const board = tasks.map((t) => `  #${t.position + 1} ${t.status.padEnd(10)} fallos=${t.attempts} ${t.title}`).join("\n");
+    if (board && board !== lastBoard) {
+      console.log(`${" ".repeat(10)}Tareas:\n${board}`);
+      lastBoard = board;
+    }
+  };
+
+  let steps = 0;
+  const report = async (stopReason?: string) => {
+    await flush();
+    if (stopReason) console.log(`\nDetenido: ${stopReason}`);
+    await printReport(repo, runId, start, steps);
+  };
+  process.once("SIGINT", () => {
+    report("interrumpido con Ctrl+C").finally(() => process.exit(130));
+  });
+
+  while (steps < MAX_STEPS) {
+    steps += 1;
+    const result = await step(repo, provider, runId);
+    await flush();
+    if (result.done) return report();
+    if (result.retryAfter && result.retryAfter > MAX_WAIT_SECONDS) {
+      return report(`hay que esperar ${formatWaitUntil(result.retryAfter)} (límite de uso de la suscripción)`);
+    }
+    if (result.retryAfter) await sleep(result.retryAfter * 1000 + 500);
+  }
+  return report(`${MAX_STEPS} pasos sin terminar`);
+}
+
+async function printReport(repo: MemoryRepository, runId: string, start: number, steps: number) {
+  const run = await repo.getRun(runId);
+  const tasks = await repo.listTasks(runId);
+  console.log(`\nEstado final: ${run?.status} en ${elapsed(start)} y ${steps} pasos.`);
+  for (const t of tasks) {
+    console.log(`  #${t.position + 1} ${t.status} (fallos de Testing: ${t.attempts}) ${t.title}`);
+    t.acceptance_criteria.forEach((c) => console.log(`       · ${c}`));
+  }
+  console.log(`Resumen: ${mask(run?.summary ?? "(sin resumen)")}`);
+  const byModel = calls.reduce<Record<string, number>>((acc, c) => {
+    const key = `${c.model} ${c.ok ? "OK" : "fallo"}`;
+    acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
+  const seconds = calls.reduce((acc, c) => acc + c.ms, 0) / 1000;
+  const output = calls.reduce((acc, c) => acc + (c.outputTokens ?? 0), 0);
+  console.log(`Llamadas a Claude: ${calls.length} (${seconds.toFixed(0)} s en total, ${output} tokens de salida)`, byModel);
+
+  if (outDir) {
+    const files = await repo.getFiles(runId);
+    for (const [path, content] of Object.entries(files)) {
+      const target = join(outDir, path);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, content);
+    }
+    writeFileSync(join(outDir, "_eventos.json"), mask(JSON.stringify({ run, tasks, events: repo.events }, null, 2)));
+    console.log(`Web resultante y eventos guardados en ${outDir}`);
+  }
+  if (run?.status !== "done") process.exitCode = 1;
+}
+
+main().catch((error) => {
+  console.error(mask(error instanceof Error ? error.message : String(error)));
+  process.exit(1);
+});

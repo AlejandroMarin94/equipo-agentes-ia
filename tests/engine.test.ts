@@ -242,6 +242,21 @@ describe("bucle fallo → reintento → bloqueo", () => {
 });
 
 describe("límites de la API, errores y bloqueo", () => {
+  it("una espera larga (cuota diaria) se anuncia con horas y la hora de Madrid, no en segundos", async () => {
+    const repo = new MemoryRepository();
+    const runId = await newRun(repo, "Añade un modo oscuro");
+    const provider = providerWith({
+      plan: async () => {
+        throw new RateLimitError(44_520);
+      },
+    });
+    const result = await step(repo, provider, runId, () => new Date("2026-11-23T10:00:00Z"));
+    expect(result.retryAfter).toBe(44_520);
+    expect(repo.events.at(-1)?.message).toBe(
+      "Cuota de la API agotada hasta las 23:22 (hora de Madrid); reintento en 12 h 22 min.",
+    );
+  });
+
   it("ante un 429 no rompe el run: pide esperar, lo registra y lo reintenta después", async () => {
     const repo = new MemoryRepository();
     const runId = await newRun(repo, "Añade un modo oscuro");

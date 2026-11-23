@@ -12,6 +12,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { startRun, step } from "../lib/engine/engine";
+import { formatWaitUntil } from "../lib/format";
 import { MemoryRepository } from "../lib/engine/memory-repository";
 import { getProvider } from "../lib/llm";
 
@@ -100,7 +101,7 @@ async function main() {
     await flush();
     if (result.done) return report();
     if (result.retryAfter && result.retryAfter > MAX_WAIT_SECONDS) {
-      return report(`la API pide esperar ${result.retryAfter} s (cuota agotada)`);
+      return report(`la API pide esperar ${formatWaitUntil(result.retryAfter)} (cuota agotada)`);
     }
     if (result.retryAfter) await sleep(result.retryAfter * 1000 + 500);
   }

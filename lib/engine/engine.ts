@@ -6,6 +6,7 @@ import { runDeterministicChecks } from "./checks";
 import { applyChanges } from "./files";
 import type { Repository } from "./repository";
 import { LIMITS } from "../limits";
+import { LONG_WAIT_SECONDS, formatMadridTime, formatWait } from "../format";
 
 export { LIMITS };
 
@@ -50,10 +51,6 @@ const HOUR_MS = 3600 * 1000;
 export function hourlyLimitReleaseAt(creations: Date[], maxRunsPerHour: number): Date | null {
   if (creations.length < maxRunsPerHour) return null;
   return new Date(creations[creations.length - maxRunsPerHour].getTime() + HOUR_MS);
-}
-
-function formatMadridTime(date: Date): string {
-  return new Intl.DateTimeFormat("es-ES", { timeZone: "Europe/Madrid", hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
 /** Qué modelo ha respondido, para el registro (payload.model y payload.fallbackFrom). */
@@ -147,8 +144,10 @@ export async function step(
         agent,
         kind: "rate_limit",
         message: error.overloaded
-          ? `Modelos de IA saturados (${errorMessage(error)}); reintento en ${retryAfter} s.`
-          : `Límite de la API alcanzado; reintento en ${retryAfter} s.`,
+          ? `Modelos de IA saturados (${errorMessage(error)}); reintento en ${formatWait(retryAfter)}.`
+          : retryAfter >= LONG_WAIT_SECONDS
+            ? `Cuota de la API agotada hasta las ${formatMadridTime(lockUntil)} (hora de Madrid); reintento en ${formatWait(retryAfter)}.`
+            : `Límite de la API alcanzado; reintento en ${formatWait(retryAfter)}.`,
       });
     } else {
       const errors = current.error_count + 1;

@@ -129,6 +129,12 @@ export function RunView({ initialRun, initialTasks, initialEvents, initialFiles 
           router.replace("/login");
           return;
         }
+        // 502-504: la plataforma cortó el paso (p. ej. tiempo máximo de Vercel). El motor lo retoma solo.
+        if (response.status >= 502 && response.status <= 504) {
+          setError("El servidor no ha respondido a tiempo; reintentando…");
+          await sleep(5000);
+          continue;
+        }
         const body = (await response.json().catch(() => ({}))) as StepResponse;
         if (!response.ok) {
           setError(body.error ?? `Error ${response.status} al avanzar la ejecución.`);

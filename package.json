@@ -4,11 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/pack-claude-cli.mjs && next build",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "create-test-user": "tsx scripts/create-test-user.ts"
+    "create-test-user": "tsx scripts/create-test-user.ts",
+    "pack-claude-cli": "node scripts/pack-claude-cli.mjs --force"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.330",

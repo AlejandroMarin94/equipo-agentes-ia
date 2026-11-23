@@ -40,3 +40,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# CLI de Claude para Linux comprimido (lo genera el build de Vercel)
+/.claude-cli/

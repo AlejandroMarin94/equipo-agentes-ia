@@ -1,6 +1,6 @@
 /**
  * Empaqueta el CLI de Claude Code para Linux x64 (glibc) comprimido con brotli en .claude-cli/,
- * para la función del paso en Vercel: el binario (~380 MB) no cabe en los 250 MB de una función,
+ * para la función del paso en Vercel: el binario (~381 MB) no cabe en los 250 MB de una función,
  * comprimido sí. En el arranque en frío lib/llm/claude-cli.ts lo descomprime en /tmp.
  *
  *   node scripts/pack-claude-cli.mjs            # solo en el build de Vercel (VERCEL=1); fuera, no hace nada
@@ -25,7 +25,8 @@ const META_FILE = join(OUT_DIR, "meta.json");
 const PACKAGE = "@anthropic-ai/claude-agent-sdk-linux-x64";
 const QUALITY = 9;
 
-const mb = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+// MB decimales (1 MB = 10^6 bytes), como el límite de 250 MB de Vercel y el README.
+const mb = (bytes) => `${(bytes / 1e6).toFixed(1)} MB`;
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 
 if (!process.env.VERCEL && !process.argv.includes("--force")) {

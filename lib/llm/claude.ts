@@ -90,12 +90,9 @@ export function subprocessEnv(env: Env, auth: ClaudeAuth, home: string): Record<
     ENABLE_CLAUDEAI_MCP_SERVERS: "false",
     TZ: "Europe/Madrid",
   });
-  if (auth === "token") {
-    Object.assign(out, {
-      HOME: home,
-      CLAUDE_CONFIG_DIR: join(home, ".claude"),
-      [OAUTH_TOKEN_ENV]: env[OAUTH_TOKEN_ENV]!.trim(),
-    });
+  const token = env[OAUTH_TOKEN_ENV]?.trim();
+  if (auth === "token" && token) {
+    Object.assign(out, { HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude"), [OAUTH_TOKEN_ENV]: token });
   }
   return out;
 }
@@ -165,7 +162,7 @@ export function classifyFailure(
   if (assistantError === "rate_limit" || status === 429 || QUOTA_PATTERN.test(detail)) {
     return new ModelError("quota", message, secondsUntil(limit?.resetsAt));
   }
-  if (AUTH_ERRORS.includes(assistantError!) || status === 401 || status === 403 || NO_SESSION_PATTERN.test(detail)) {
+  if ((assistantError && AUTH_ERRORS.includes(assistantError)) || status === 401 || status === 403 || NO_SESSION_PATTERN.test(detail)) {
     return new FatalLlmError(NO_SESSION, message);
   }
   if (assistantError === "model_not_found" || status === 404 || UNAVAILABLE_PATTERN.test(detail)) {

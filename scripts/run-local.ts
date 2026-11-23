@@ -7,6 +7,7 @@
  * Lee la configuración de .env.local (la clave no se imprime). Imprime los eventos y el
  * estado de las tareas hasta done/failed y, con --out, guarda ahí la web resultante.
  * Cuenta las peticiones HTTP a la API de Gemini (respaldos y reintentos incluidos).
+ * Se detiene (guardando lo hecho) si la API pide esperar más de 5 min o con Ctrl+C.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -21,6 +22,7 @@ try {
 }
 
 const MAX_STEPS = 80;
+const MAX_WAIT_SECONDS = 300;
 const DEFAULT_REQUEST = "Añade una página de contacto con formulario";
 
 const args = process.argv.slice(2);
@@ -83,14 +85,29 @@ async function main() {
   };
 
   let steps = 0;
+  const report = async (stopReason?: string) => {
+    await flush();
+    if (stopReason) console.log(`\nDetenido: ${stopReason}`);
+    await printReport(repo, runId, start, steps);
+  };
+  process.once("SIGINT", () => {
+    report("interrumpido con Ctrl+C").finally(() => process.exit(130));
+  });
+
   while (steps < MAX_STEPS) {
     steps += 1;
     const result = await step(repo, provider, runId);
     await flush();
-    if (result.done) break;
+    if (result.done) return report();
+    if (result.retryAfter && result.retryAfter > MAX_WAIT_SECONDS) {
+      return report(`la API pide esperar ${result.retryAfter} s (cuota agotada)`);
+    }
     if (result.retryAfter) await sleep(result.retryAfter * 1000 + 500);
   }
+  return report(`${MAX_STEPS} pasos sin terminar`);
+}
 
+async function printReport(repo: MemoryRepository, runId: string, start: number, steps: number) {
   const run = await repo.getRun(runId);
   const tasks = await repo.listTasks(runId);
   console.log(`\nEstado final: ${run?.status} en ${elapsed(start)} y ${steps} pasos.`);

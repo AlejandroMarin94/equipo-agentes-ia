@@ -73,8 +73,8 @@ export class RateLimitError extends Error {
 }
 
 /**
- * Fallo que no se arregla reintentando: sin sesión ni token, credencial que no es la suscripción
- * o configuración incorrecta. El run se marca como failed en el acto, con el motivo.
+ * Fallo que no se arregla reintentando: sin sesión ni token, credencial que no es la suscripción,
+ * configuración incorrecta o un prompt por encima del umbral de seguridad. El run se marca como failed en el acto, con el motivo.
  */
 export class FatalLlmError extends Error {
   constructor(message: string) {

@@ -3,6 +3,10 @@ import type { FileChange, SiteFiles } from "../types";
 const ALLOWED_EXTENSIONS = [".html", ".css", ".js", ".svg", ".txt", ".json"];
 const MAX_FILE_SIZE = 100_000;
 const MAX_FILES = 30;
+/** La web entera viaja en cada llamada a Develop y Testing: su tamaño total también tiene tope. */
+export const MAX_SITE_SIZE = 300_000;
+
+const siteSize = (files: SiteFiles) => Object.values(files).reduce((total, content) => total + content.length, 0);
 
 export interface ApplyResult {
   files: SiteFiles;
@@ -29,6 +33,7 @@ export function applyChanges(current: SiteFiles, changes: FileChange[]): ApplyRe
   const files: SiteFiles = { ...current };
   const applied: FileChange[] = [];
   const rejected: ApplyResult["rejected"] = [];
+  let total = siteSize(files);
 
   for (const change of changes) {
     const path = normalizePath(change.path ?? "");
@@ -42,6 +47,7 @@ export function applyChanges(current: SiteFiles, changes: FileChange[]): ApplyRe
         rejected.push({ change, reason: "El archivo no existe" });
         continue;
       }
+      total -= files[path].length;
       delete files[path];
       applied.push({ path, action: "delete" });
       continue;
@@ -62,7 +68,14 @@ export function applyChanges(current: SiteFiles, changes: FileChange[]): ApplyRe
       continue;
     }
 
+    const newTotal = total - (files[path]?.length ?? 0) + content.length;
+    if (newTotal > MAX_SITE_SIZE) {
+      rejected.push({ change, reason: "La web superaría el tamaño máximo total" });
+      continue;
+    }
+
     const action = path in files ? "update" : "create";
+    total = newTotal;
     files[path] = content;
     applied.push({ path, action, content });
   }

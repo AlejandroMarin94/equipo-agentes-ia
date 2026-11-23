@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyChanges, contentTypeFor, normalizePath } from "@/lib/engine/files";
+import { MAX_SITE_SIZE, applyChanges, contentTypeFor, normalizePath } from "@/lib/engine/files";
 
 describe("applyChanges", () => {
   const base = { "index.html": "<html></html>", "styles.css": "body{}" };
@@ -31,6 +31,20 @@ describe("applyChanges", () => {
     expect(result.applied).toHaveLength(0);
     expect(result.rejected).toHaveLength(4);
     expect(result.files).toEqual(base);
+  });
+
+  it("rechaza el cambio que haría pasar la web del tamaño total máximo, contando lo que se borra o reemplaza", () => {
+    const chunk = "x".repeat(90_000);
+    const files = { "a.html": chunk, "b.html": chunk, "c.html": chunk };
+    const result = applyChanges(files, [
+      { path: "d.html", action: "create", content: chunk }, // 360 KB: no cabe
+      { path: "a.html", action: "update", content: "x".repeat(100_000) }, // 280 KB: cabe
+      { path: "b.html", action: "delete" }, // 190 KB
+      { path: "d.html", action: "create", content: "x".repeat(100_000) }, // 290 KB: ya cabe
+    ]);
+    expect(result.rejected).toEqual([{ change: expect.objectContaining({ path: "d.html" }), reason: expect.stringContaining("tamaño máximo total") }]);
+    expect(result.applied.map((c) => `${c.action} ${c.path}`)).toEqual(["update a.html", "delete b.html", "create d.html"]);
+    expect(Object.values(result.files).join("").length).toBeLessThanOrEqual(MAX_SITE_SIZE);
   });
 
   it("normaliza rutas con ./ inicial", () => {

@@ -17,7 +17,7 @@ import { claudeAuth, classifyFailure, createClaudeCaller, subprocessEnv, type Ca
 import { claudeExecutable, resetClaudeExecutable } from "@/lib/llm/claude-cli";
 import { getProvider } from "@/lib/llm";
 import { MockProvider } from "@/lib/llm/mock";
-import { ClaudeProvider } from "@/lib/llm/provider";
+import { ClaudeProvider, MAX_PROMPT_CHARS } from "@/lib/llm/provider";
 import { DEVELOP_SCHEMA, SUMMARY_SCHEMA, shapeError } from "@/lib/llm/schemas";
 import { FatalLlmError, RateLimitError } from "@/lib/llm/types";
 
@@ -127,6 +127,16 @@ describe("ClaudeProvider", () => {
     await provider.review({ request: "x", task, files: {} });
     expect(await provider.summarize({ request: "x", tasks: [] })).toEqual({ summary: "ok", model: "opus", fallbackFrom: [] });
     expect(calls.map((c) => c.model)).toEqual(["opus", "sonnet-dev", "sonnet-test", "opus"]);
+  });
+
+  it("no llama al modelo si el prompt supera el umbral de seguridad: error que detiene el run", async () => {
+    const calls: { model: string; prompt: string }[] = [];
+    const provider = new ClaudeProvider(models, fakeCaller({}, calls));
+    const files = { "index.html": "x".repeat(MAX_PROMPT_CHARS) };
+    const error = await provider.review({ request: "x", task, files }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(FatalLlmError);
+    expect((error as Error).message).toMatch(/demasiado grandes .*máximo 400 KB/);
+    expect(calls).toHaveLength(0);
   });
 
   it("Develop: content null (delete) se convierte en un cambio sin contenido", async () => {

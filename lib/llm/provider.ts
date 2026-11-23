@@ -1,21 +1,28 @@
 import type { FileChange, SiteFiles } from "../types";
 import { callChain, type AgentName, type LlmRequest, type ModelCaller } from "./chain";
 import { DEVELOP_SCHEMA, PLAN_SCHEMA, REVIEW_SCHEMA, SUMMARY_SCHEMA } from "./schemas";
-import type {
-  AgentProvider,
-  DevelopOutput,
-  PlannedTask,
-  PlanOutput,
-  ReviewOutput,
-  SummaryOutput,
-  SummaryTask,
-  TaskInput,
+import {
+  FatalLlmError,
+  type AgentProvider,
+  type DevelopOutput,
+  type PlannedTask,
+  type PlanOutput,
+  type ReviewOutput,
+  type SummaryOutput,
+  type SummaryTask,
+  type TaskInput,
 } from "./types";
 
 const COMMON_RULES = `Trabajáis sobre una web estática pequeña (HTML, CSS y JS sin build) de un negocio ficticio.
 Reglas de la web: rutas siempre relativas (nada que empiece por "/"), sin dependencias externas ni CDNs,
 todas las páginas comparten cabecera, menú y pie, y todo el texto visible está en español.
 La web se previsualiza en un iframe aislado: si usas localStorage, envuélvelo en try/catch.`;
+
+/**
+ * Umbral de seguridad antes de llamar al modelo: la web tiene tope (MAX_SITE_SIZE en files.ts), pero
+ * esto evita mandar un prompt desmesurado si algo se escapa. Reintentar no lo arregla: el run se detiene.
+ */
+export const MAX_PROMPT_CHARS = 400_000;
 
 function renderFiles(files: SiteFiles): string {
   return Object.keys(files)
@@ -41,6 +48,12 @@ export class ClaudeProvider implements AgentProvider {
   ) {}
 
   private generate<T>(agent: AgentName, request: Pick<LlmRequest, "system" | "prompt" | "output">) {
+    const size = request.system.length + request.prompt.length;
+    if (size > MAX_PROMPT_CHARS) {
+      throw new FatalLlmError(
+        `La web y la petición son demasiado grandes para enviarlas al modelo (${Math.round(size / 1000)} KB; máximo ${MAX_PROMPT_CHARS / 1000} KB).`,
+      );
+    }
     return callChain<T>(this.models[agent], this.caller, {
       ...request,
       system: `${request.system}\n\n${COMMON_RULES}`,

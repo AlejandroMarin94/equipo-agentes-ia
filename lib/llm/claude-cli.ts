@@ -43,6 +43,8 @@ async function unpack(packed: string, metaFile: string, targetDir: string): Prom
   const meta = JSON.parse(await readFile(metaFile, "utf8")) as Meta;
   const dir = join(targetDir, `claude-cli-${meta.version}`);
   const target = join(dir, "claude");
+  // Sin sha256 al reutilizar: leer ~381 MB cuesta ~0,5 s (más en Vercel) en cada arranque, /tmp es de la propia
+  // instancia y el rename atómico ya impide un binario a medio escribir; el sha256 se comprueba al empaquetar.
   if ((await stat(target).catch(() => null))?.size === meta.size) return target;
 
   await mkdir(dir, { recursive: true });

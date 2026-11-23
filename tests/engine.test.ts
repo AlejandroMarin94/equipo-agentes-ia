@@ -214,6 +214,48 @@ describe("límites de la API, errores y bloqueo", () => {
     expect(repo.tasks).toHaveLength(0);
   });
 
+  it("relee el run tras ganar el bloqueo: no actúa sobre un estado viejo", async () => {
+    const repo = new MemoryRepository();
+    const runId = await newRun(repo, "Añade una página de contacto");
+    const provider = new MockProvider();
+    await step(repo, provider, runId); // plan
+    await step(repo, provider, runId); // develop de la tarea 1 → testing
+    // Otro paso leyó el run cuando aún estaba en developing y gana el bloqueo después.
+    const stale = { ...(await repo.getRun(runId))!, status: "developing" as const };
+    const realGetRun = repo.getRun.bind(repo);
+    let first = true;
+    repo.getRun = async (id) => {
+      if (first) {
+        first = false;
+        return stale;
+      }
+      return realGetRun(id);
+    };
+    const develop = vi.spyOn(provider, "develop");
+
+    await step(repo, provider, runId);
+
+    expect(develop).not.toHaveBeenCalled();
+    const tasks = await repo.listTasks(runId);
+    expect(tasks[0].status).toBe("failed"); // Testing ha revisado la tarea 1
+    expect(tasks[1].status).toBe("pending"); // y Develop no ha empezado la 2 en paralelo
+  });
+
+  it("si un paso se cortó con una tarea en pruebas, la prueba antes de seguir", async () => {
+    const repo = new MemoryRepository();
+    const runId = await newRun(repo, "Añade una página de contacto");
+    const provider = new MockProvider();
+    await step(repo, provider, runId); // plan
+    await step(repo, provider, runId); // develop de la tarea 1 → testing
+    await repo.updateRun(runId, { status: "developing" }); // el run no llegó a pasar a testing
+    const develop = vi.spyOn(provider, "develop");
+
+    expect((await step(repo, provider, runId)).status).toBe("testing");
+    expect(develop).not.toHaveBeenCalled();
+    await runToEnd(repo, provider, runId);
+    expect((await repo.listTasks(runId)).every((t) => t.status === "done")).toBe(true);
+  });
+
   it("tras 3 errores seguidos marca el run como failed", async () => {
     const repo = new MemoryRepository();
     const runId = await newRun(repo, "Añade un modo oscuro");

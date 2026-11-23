@@ -98,11 +98,15 @@ export async function step(
 
   let lockUntil: Date | null = null;
   let retryAfter: number | undefined;
+  let current = run;
   try {
-    await advance(repo, provider, run);
-    if (run.error_count > 0) await repo.updateRun(runId, { error_count: 0 });
+    // Se relee con el bloqueo ya ganado: otro paso puede haber avanzado el run
+    // entre la primera lectura y el bloqueo, y no se debe actuar sobre un estado viejo.
+    current = (await repo.getRun(runId)) ?? run;
+    await advance(repo, provider, current);
+    if (current.error_count > 0) await repo.updateRun(runId, { error_count: 0 });
   } catch (error) {
-    const agent = AGENT_BY_STATUS[run.status];
+    const agent = AGENT_BY_STATUS[current.status];
     if (error instanceof RateLimitError) {
       retryAfter = error.retryAfterSeconds;
       // El propio bloqueo evita que otra pestaña lo intente antes de tiempo.
@@ -114,7 +118,7 @@ export async function step(
         message: `Límite de la API alcanzado; reintento en ${retryAfter} s.`,
       });
     } else {
-      const errors = run.error_count + 1;
+      const errors = current.error_count + 1;
       await repo.addEvent({ run_id: runId, agent, kind: "error", message: `Error: ${errorMessage(error)}` });
       if (errors >= LIMITS.maxConsecutiveErrors) {
         await repo.updateRun(runId, {
@@ -132,7 +136,7 @@ export async function step(
   }
 
   const after = await repo.getRun(runId);
-  const status = after?.status ?? run.status;
+  const status = after?.status ?? current.status;
   return { status, done: isTerminal(status), retryAfter };
 }
 
@@ -193,6 +197,11 @@ async function planStep(repo: Repository, provider: AgentProvider, run: Run) {
 
 async function developStep(repo: Repository, provider: AgentProvider, run: Run) {
   const tasks = await repo.listTasks(run.id);
+  // Un paso cortado tras pasar la tarea a pruebas pero antes de cambiar el run: primero se prueba.
+  if (tasks.some((t) => t.status === "testing")) {
+    await repo.updateRun(run.id, { status: "testing" });
+    return;
+  }
   // "developing" incluido por si un paso anterior se cortó a mitad de la llamada.
   const task = tasks.find((t) => t.status === "pending" || t.status === "failed" || t.status === "developing");
   if (!task) {

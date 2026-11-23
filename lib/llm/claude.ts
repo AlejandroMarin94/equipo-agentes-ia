@@ -261,8 +261,10 @@ async function callOnce(model: string, request: LlmRequest, env: Env, run: Query
   }
 
   if (!result) throw new Error(`Claude (${model}) terminó sin responder.`);
-  usage.inputTokens = result.usage?.input_tokens;
-  usage.outputTokens = result.usage?.output_tokens;
+  // La entrada cuenta también lo leído o escrito en la caché de prompts.
+  const u = result.usage;
+  usage.inputTokens = u && (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+  usage.outputTokens = u?.output_tokens;
   if (result.subtype !== "success" || result.is_error) {
     const detail = result.subtype === "success" ? result.result : [result.subtype, ...(result.errors ?? [])].join(": ");
     const status = result.subtype === "success" ? result.api_error_status : null;

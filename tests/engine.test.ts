@@ -1,10 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runDeterministicChecks } from "@/lib/engine/checks";
 import { LIMITS, startRun, step } from "@/lib/engine/engine";
 import { hourlyLimitReleaseAt } from "@/lib/limits";
 import { MemoryRepository } from "@/lib/engine/memory-repository";
 import { MockProvider } from "@/lib/llm/mock";
-import { FatalLlmError, RateLimitError, type AgentProvider } from "@/lib/llm/types";
+import { FatalLlmError, PublicError, RateLimitError, type AgentProvider } from "@/lib/llm/types";
 import { maxRunsPerDay, maxRunsPerHour } from "@/lib/env";
 import { TEMPLATE_FILES } from "@/lib/template";
 import type { RunStatus } from "@/lib/types";
@@ -268,6 +268,12 @@ describe("bucle fallo → reintento → bloqueo", () => {
 });
 
 describe("límites de uso, errores y bloqueo", () => {
+  let consoleError: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => consoleError.mockRestore());
+
   it("una espera larga (límite de uso) se anuncia con horas y la hora de Madrid, no en segundos", async () => {
     const repo = new MemoryRepository();
     const runId = await newRun(repo, "Añade un modo oscuro");
@@ -387,8 +393,35 @@ describe("límites de uso, errores y bloqueo", () => {
     await step(repo, provider, runId);
     const last = await step(repo, provider, runId);
     expect(last).toMatchObject({ status: "failed", done: true });
-    expect((await repo.getRun(runId))?.summary).toContain("respuesta no válida");
     expect(repo.events.filter((e) => e.kind === "error")).toHaveLength(3);
+  });
+
+  it("los errores internos (CLI, base de datos) no llegan al registro ni al resumen: solo al log del servidor", async () => {
+    const repo = new MemoryRepository();
+    const runId = await newRun(repo, "Añade un modo oscuro");
+    const provider = providerWith({
+      plan: async () => {
+        throw new Error("Error de base de datos (crear tareas): duplicate key value violates unique constraint");
+      },
+    });
+    for (let i = 0; i < LIMITS.maxConsecutiveErrors; i++) await step(repo, provider, runId);
+    const run = await repo.getRun(runId);
+    const visible = [run?.summary, ...repo.events.map((e) => e.message)].join("\n");
+    expect(visible).not.toContain("duplicate key");
+    expect(run?.summary).toContain("Error inesperado");
+    expect(String(consoleError.mock.calls[0][1])).toContain("duplicate key");
+  });
+
+  it("de un error legible (PublicError) se enseña el mensaje, no el detalle técnico", async () => {
+    const repo = new MemoryRepository();
+    const runId = await newRun(repo, "Añade un modo oscuro");
+    const provider = providerWith({
+      plan: async () => {
+        throw new PublicError("Ningún modelo ha respondido (opus (no disponible)).", "API Error 404 {\"type\":\"not_found\"}");
+      },
+    });
+    await step(repo, provider, runId);
+    expect(repo.events.at(-1)?.message).toBe("Error: Ningún modelo ha respondido (opus (no disponible)).");
   });
 
   it("un run terminado no avanza más", async () => {

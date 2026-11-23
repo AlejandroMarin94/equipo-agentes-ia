@@ -10,6 +10,7 @@
 import { resolveModels, parseOutput, type LlmRequest } from "../lib/llm/chain";
 import { createClaudeCaller } from "../lib/llm/claude";
 import { PLAN_SCHEMA } from "../lib/llm/schemas";
+import { describeError } from "../lib/llm/types";
 
 try {
   process.loadEnvFile(".env.local");
@@ -38,7 +39,7 @@ async function main() {
       console.log(`  OK     ${model.padEnd(22)} ${Date.now() - started} ms`);
     } catch (error) {
       process.exitCode = 1;
-      const message = mask(error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").slice(0, 300);
+      const message = mask(describeError(error)).replace(/\s+/g, " ").slice(0, 300);
       console.log(`  FALLO  ${model.padEnd(22)} ${Date.now() - started} ms · ${message}`);
     }
   }

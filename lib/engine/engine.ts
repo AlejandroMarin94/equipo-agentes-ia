@@ -1,5 +1,5 @@
 import { TEMPLATE_FILES } from "../template";
-import { FatalLlmError, RateLimitError, type AgentProvider, type ModelInfo, type TaskInput } from "../llm/types";
+import { FatalLlmError, PublicError, RateLimitError, type AgentProvider, type ModelInfo, type TaskInput } from "../llm/types";
 import type { Agent, CheckResult, Run, RunStatus, SiteFiles, Task } from "../types";
 import { TERMINAL_STATUSES } from "../types";
 import { runDeterministicChecks } from "./checks";
@@ -49,6 +49,10 @@ function modelPayload(info: ModelInfo): ModelInfo {
 }
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 500);
+
+/** Lo que ve el usuario de un error: el mensaje si es legible (PublicError); si no, una frase sin detalle técnico. */
+const publicMessage = (error: unknown) =>
+  error instanceof PublicError ? errorMessage(error) : "Error inesperado (el detalle queda en el registro del servidor).";
 
 function runLimitMessage(error: RunLimitError, limits: { maxRunsPerDay: number; maxRunsPerHour: number }, now: Date) {
   if (error.limit === "day") {
@@ -143,20 +147,22 @@ export async function step(
       });
     } else if (error instanceof FatalLlmError) {
       // Sin sesión, credencial de pago o mal configurado: reintentar no lo arregla.
-      await repo.addEvent({ run_id: runId, agent, kind: "error", message: `Error: ${errorMessage(error)}` });
+      console.error(`Error fatal en el paso del run ${runId}:`, error);
+      await repo.addEvent({ run_id: runId, agent, kind: "error", message: `Error: ${publicMessage(error)}` });
       await repo.updateRun(runId, {
         status: "failed",
         error_count: current.error_count + 1,
-        summary: `La ejecución se ha detenido: ${errorMessage(error)}`,
+        summary: `La ejecución se ha detenido: ${publicMessage(error)}`,
       });
     } else {
+      console.error(`Error en el paso del run ${runId}:`, error);
       const errors = current.error_count + 1;
-      await repo.addEvent({ run_id: runId, agent, kind: "error", message: `Error: ${errorMessage(error)}` });
+      await repo.addEvent({ run_id: runId, agent, kind: "error", message: `Error: ${publicMessage(error)}` });
       if (errors >= LIMITS.maxConsecutiveErrors) {
         await repo.updateRun(runId, {
           status: "failed",
           error_count: errors,
-          summary: `La ejecución se ha detenido tras ${errors} errores seguidos. Último error: ${errorMessage(error)}`,
+          summary: `La ejecución se ha detenido tras ${errors} errores seguidos. Último error: ${publicMessage(error)}`,
         });
       } else {
         await repo.updateRun(runId, { error_count: errors });
@@ -217,7 +223,7 @@ async function planStep(repo: Repository, provider: AgentProvider, run: Run) {
         acceptance_criteria: criteria.length > 0 ? criteria : [`La tarea «${title}» está implementada en la web`],
       };
     });
-  if (tasks.length === 0) throw new Error("El Orquestador no ha devuelto ninguna tarea válida");
+  if (tasks.length === 0) throw new PublicError("El Orquestador no ha devuelto ninguna tarea válida.");
 
   await repo.insertTasks(run.id, tasks);
   await repo.addEvent({

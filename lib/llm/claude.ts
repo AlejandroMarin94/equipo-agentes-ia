@@ -11,7 +11,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { DEFAULT_RETRY_SECONDS, ModelError, type LlmRequest, type ModelCaller } from "./chain";
 import { claudeExecutable } from "./claude-cli";
-import { FatalLlmError } from "./types";
+import { FatalLlmError, describeError } from "./types";
 
 /**
  * Claude por la suscripción (Claude Agent SDK, que lanza el CLI de Claude Code como subproceso),
@@ -160,13 +160,13 @@ export function classifyFailure(
 ): Error {
   const message = `${model}: ${detail.slice(0, 300) || "sin detalle"}`;
   if (assistantError === "billing_error") {
-    return new FatalLlmError(`Claude pide facturación (${message}): se corta para no cobrar fuera de la suscripción.`);
+    return new FatalLlmError("Claude pide facturación: se corta para no cobrar fuera de la suscripción.", message);
   }
   if (assistantError === "rate_limit" || status === 429 || QUOTA_PATTERN.test(detail)) {
     return new ModelError("quota", message, secondsUntil(limit?.resetsAt));
   }
   if (AUTH_ERRORS.includes(assistantError!) || status === 401 || status === 403 || NO_SESSION_PATTERN.test(detail)) {
-    return new FatalLlmError(`${NO_SESSION} (${message})`);
+    return new FatalLlmError(NO_SESSION, message);
   }
   if (assistantError === "model_not_found" || status === 404 || UNAVAILABLE_PATTERN.test(detail)) {
     return new ModelError("unavailable", message);
@@ -203,7 +203,7 @@ export function createClaudeCaller(
       onCall?.({ model, ms: Date.now() - started, ok: true, ...usage });
       return text;
     } catch (error) {
-      onCall?.({ model, ms: Date.now() - started, ok: false, error: error instanceof Error ? error.message : String(error), ...usage });
+      onCall?.({ model, ms: Date.now() - started, ok: false, error: describeError(error), ...usage });
       throw error;
     }
   };
@@ -233,7 +233,7 @@ async function callOnce(model: string, request: LlmRequest, env: Env, run: Query
           );
         }
         if (!Array.isArray(message.tools) || message.tools.length > 0) {
-          throw new FatalLlmError(`Claude arrancó con herramientas (${String(message.tools)}): solo debe generar texto.`);
+          throw new FatalLlmError("Claude arrancó con herramientas: solo debe generar texto.", String(message.tools));
         }
         authorized = true;
       } else if (message.type === "rate_limit_event") {

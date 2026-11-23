@@ -1,5 +1,5 @@
 import { shapeError, type OutputSchema } from "./schemas";
-import { RateLimitError, type ModelInfo } from "./types";
+import { PublicError, RateLimitError, type ModelInfo } from "./types";
 
 /**
  * Modelos de cada agente, en orden: se prueba el primero y, si está saturado, sin tiempo, en su límite
@@ -150,7 +150,5 @@ export async function callChain<T>(
 
   if (transient) throw new RateLimitError(OVERLOADED_RETRY_SECONDS, failed.join(", "), true);
   if (quotaRetrySeconds !== null) throw new RateLimitError(quotaRetrySeconds, failed.join(", "));
-  throw new Error(
-    `Ningún modelo ha respondido (${failed.join(", ") || "sin tiempo"}). Último error: ${lastError?.message ?? "ninguno"}`,
-  );
+  throw new PublicError(`Ningún modelo ha respondido (${failed.join(", ") || "sin tiempo"}).`, lastError?.message);
 }

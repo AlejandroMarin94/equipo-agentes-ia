@@ -73,12 +73,32 @@ export class RateLimitError extends Error {
 }
 
 /**
+ * Error cuyo mensaje se puede enseñar al usuario (registro de la ejecución). El detalle técnico
+ * (salida del CLI, error de base de datos…) va aparte en `detail` y solo llega al log del servidor.
+ */
+export class PublicError extends Error {
+  constructor(
+    message: string,
+    public readonly detail?: string,
+  ) {
+    super(message);
+    this.name = "PublicError";
+  }
+}
+
+/** Mensaje con el detalle técnico, para el log y los scripts (nunca para la interfaz). */
+export function describeError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  return error instanceof PublicError && error.detail ? `${error.message} (${error.detail})` : error.message;
+}
+
+/**
  * Fallo que no se arregla reintentando: sin sesión ni token, credencial que no es la suscripción,
  * configuración incorrecta o un prompt por encima del umbral de seguridad. El run se marca como failed en el acto, con el motivo.
  */
-export class FatalLlmError extends Error {
-  constructor(message: string) {
-    super(message);
+export class FatalLlmError extends PublicError {
+  constructor(message: string, detail?: string) {
+    super(message, detail);
     this.name = "FatalLlmError";
   }
 }

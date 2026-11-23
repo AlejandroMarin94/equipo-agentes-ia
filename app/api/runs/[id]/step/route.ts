@@ -23,10 +23,8 @@ export async function POST(_request: Request, ctx: RouteContext<"/api/runs/[id]/
     if (error instanceof RunNotFoundError) {
       return NextResponse.json({ error: "Ejecución no encontrada" }, { status: 404 });
     }
+    // El detalle (base de datos, CLI…) solo al log del servidor.
     console.error("Error en el paso", id, error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Error inesperado" },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: "Error inesperado al avanzar la ejecución." }, { status: 500 });
   }
 }

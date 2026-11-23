@@ -1,5 +1,5 @@
 import { TEMPLATE_FILES } from "../template";
-import { RateLimitError, type AgentProvider, type TaskInput } from "../llm/types";
+import { RateLimitError, type AgentProvider, type ModelInfo, type TaskInput } from "../llm/types";
 import type { Agent, CheckResult, Run, RunStatus, SiteFiles, Task } from "../types";
 import { TERMINAL_STATUSES } from "../types";
 import { runDeterministicChecks } from "./checks";
@@ -54,6 +54,12 @@ export function hourlyLimitReleaseAt(creations: Date[], maxRunsPerHour: number):
 
 function formatMadridTime(date: Date): string {
   return new Intl.DateTimeFormat("es-ES", { timeZone: "Europe/Madrid", hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+/** Qué modelo ha respondido, para el registro (payload.model y payload.fallbackFrom). */
+function modelPayload(info: ModelInfo): ModelInfo {
+  if (!info.model) return {};
+  return info.fallbackFrom?.length ? { model: info.model, fallbackFrom: info.fallbackFrom } : { model: info.model };
 }
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 500);
@@ -196,7 +202,7 @@ async function planStep(repo: Repository, provider: AgentProvider, run: Run) {
   });
   const planned = await provider.plan({ request: run.request, files });
 
-  const tasks = planned
+  const tasks = (Array.isArray(planned.tasks) ? planned.tasks : [])
     .filter((t) => t && typeof t.title === "string" && t.title.trim())
     .slice(0, LIMITS.maxTasks)
     .map((t, position) => {
@@ -222,7 +228,7 @@ async function planStep(repo: Repository, provider: AgentProvider, run: Run) {
     message: `He dividido la petición en ${tasks.length} ${tasks.length === 1 ? "tarea" : "tareas"}: ${tasks
       .map((t, i) => `${i + 1}) ${t.title}`)
       .join("; ")}. Se las paso a Develop.`,
-    payload: { tasks },
+    payload: { tasks, ...modelPayload(planned) },
   });
   await repo.updateRun(run.id, { status: "developing" });
 }
@@ -284,6 +290,7 @@ async function developStep(repo: Repository, provider: AgentProvider, run: Run) 
     payload: {
       applied: applied.map(({ path, action }) => ({ path, action })),
       rejected: rejected.map((r) => ({ path: r.change.path, reason: r.reason })),
+      ...modelPayload(output),
     },
   });
   await repo.updateTask(task.id, { status: "testing" });
@@ -310,8 +317,10 @@ async function testStep(repo: Repository, provider: AgentProvider, run: Run) {
   const automatic = runDeterministicChecks(files);
   let results: CheckResult[] = automatic;
   let passed = automatic.every((r) => r.ok);
+  let reviewModel: ModelInfo = {};
   if (passed) {
     const review = await provider.review({ request: run.request, task: toTaskInput(task), files });
+    reviewModel = modelPayload(review);
     const llmResults = Array.isArray(review.results) ? review.results : [];
     results = [...automatic, ...llmResults];
     passed = review.passed && llmResults.length > 0 && llmResults.every((r) => r.ok);
@@ -325,7 +334,7 @@ async function testStep(repo: Repository, provider: AgentProvider, run: Run) {
       agent: "testing",
       kind: "test_pass",
       message: `«${task.title}» supera las ${results.length} comprobaciones. Tarea hecha.`,
-      payload: { results },
+      payload: { results, ...reviewModel },
     });
   } else {
     const failures = results.filter((r) => !r.ok);
@@ -353,7 +362,7 @@ async function testStep(repo: Repository, provider: AgentProvider, run: Run) {
       message: `«${task.title}» no pasa (fallo ${attempts} de ${LIMITS.maxAttempts}): ${failures
         .map((r) => r.reason)
         .join(" ")}${blocked ? "" : " Se la devuelvo a Develop."}`,
-      payload: { results },
+      payload: { results, ...reviewModel },
     });
     if (blocked) {
       await repo.addEvent({
@@ -376,7 +385,7 @@ async function summarizeStep(repo: Repository, provider: AgentProvider, run: Run
     kind: "thinking",
     message: "Todas las tareas han terminado. Redactando el resumen final…",
   });
-  const summary = await provider.summarize({
+  const output = await provider.summarize({
     request: run.request,
     tasks: tasks.map((t) => ({
       title: t.title,
@@ -387,7 +396,14 @@ async function summarizeStep(repo: Repository, provider: AgentProvider, run: Run
   });
   const blocked = tasks.filter((t) => t.status === "blocked").length;
   const status: RunStatus = blocked > 0 ? "failed" : "done";
-  const text = summary.trim() || `${tasks.length - blocked} de ${tasks.length} tareas completadas.`;
+  const text = (output.summary ?? "").trim() || `${tasks.length - blocked} de ${tasks.length} tareas completadas.`;
+  const model = modelPayload(output);
   await repo.updateRun(run.id, { status, summary: text });
-  await repo.addEvent({ run_id: run.id, agent: "orchestrator", kind: "summary", message: text });
+  await repo.addEvent({
+    run_id: run.id,
+    agent: "orchestrator",
+    kind: "summary",
+    message: text,
+    payload: model.model ? model : undefined,
+  });
 }

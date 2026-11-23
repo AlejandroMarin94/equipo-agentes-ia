@@ -4,16 +4,26 @@ import {
   RateLimitError,
   type AgentProvider,
   type DevelopOutput,
+  type ModelInfo,
   type PlannedTask,
+  type PlanOutput,
   type ReviewOutput,
+  type SummaryOutput,
   type SummaryTask,
   type TaskInput,
 } from "./types";
 
-// Por debajo de maxDuration (300 s) para que el paso tenga margen de guardar el error.
+// Tiempo total de una llamada, respaldos incluidos. Por debajo de maxDuration (300 s)
+// para que el paso tenga margen de guardar el error.
 const REQUEST_TIMEOUT_MS = 240_000;
+// Sin al menos este margen no se prueba el siguiente modelo de la cadena.
+const MIN_ATTEMPT_MS = 20_000;
 const DEFAULT_RETRY_SECONDS = 30;
 const OVERLOADED_RETRY_SECONDS = 15;
+
+// 503 (saturado) y 504 (DEADLINE_EXCEEDED) son pasajeros; 404 es un modelo que ya no está disponible para la clave.
+const TRANSIENT_STATUSES = [503, 504];
+const FALLBACK_STATUSES = [...TRANSIENT_STATUSES, 404];
 
 const COMMON_RULES = `Trabajáis sobre una web estática pequeña (HTML, CSS y JS sin build) de un negocio ficticio.
 Reglas de la web: rutas siempre relativas (nada que empiece por "/"), sin dependencias externas ni CDNs,
@@ -112,12 +122,19 @@ export interface GeminiModels {
   testing: string;
 }
 
-/** Por defecto: Flash para el Orquestador y Flash-Lite (más cuota gratuita) para Develop y Testing. */
+/**
+ * Por defecto: Flash para el Orquestador y Flash-Lite (más cuota gratuita) para Develop y Testing.
+ * Comprobados con la clave el 23/11/2026: gemini-3.8-flash y gemini-3.7-flash daban 503 de forma
+ * repetida en el plan gratuito; gemini-3.6-flash y gemini-3.5-flash-lite respondían con JSON estructurado.
+ */
 export const DEFAULT_GEMINI_MODELS: GeminiModels = {
-  orchestrator: "gemini-3.8-flash",
+  orchestrator: "gemini-3.6-flash",
   develop: "gemini-3.5-flash-lite",
   testing: "gemini-3.5-flash-lite",
 };
+
+/** Modelos que se prueban, en orden, si el del agente está saturado o no disponible. */
+export const DEFAULT_FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.6-flash", "gemini-3.5-flash"];
 
 /** GEMINI_MODEL_<AGENTE>, si no GEMINI_MODEL y si no el valor por defecto de cada agente. */
 export function resolveGeminiModels(env: Record<string, string | undefined>): GeminiModels {
@@ -130,43 +147,96 @@ export function resolveGeminiModels(env: Record<string, string | undefined>): Ge
   };
 }
 
+/** GEMINI_FALLBACK_MODELS separados por comas; vacía = sin respaldo; sin definir = los de por defecto. */
+export function resolveFallbackModels(env: Record<string, string | undefined>): string[] {
+  if (env.GEMINI_FALLBACK_MODELS === undefined) return DEFAULT_FALLBACK_MODELS;
+  return env.GEMINI_FALLBACK_MODELS.split(",")
+    .map((m) => m.trim())
+    .filter(Boolean);
+}
+
+const isLite = (model: string) => model.includes("lite");
+
+/**
+ * Modelos que se prueban para un agente: el suyo y luego los de respaldo, primero los de su
+ * misma gama (Flash-Lite con Flash-Lite, Flash con Flash) para no gastar la cuota de la otra.
+ */
+export function modelChain(primary: string, fallbacks: string[]): string[] {
+  const rest = [...new Set(fallbacks)].filter((m) => m !== primary);
+  const sameTier = rest.filter((m) => isLite(m) === isLite(primary));
+  const otherTier = rest.filter((m) => isLite(m) !== isLite(primary));
+  return [primary, ...sameTier, ...otherTier];
+}
+
 export class GeminiProvider implements AgentProvider {
   readonly name = "gemini";
   private readonly client: GoogleGenAI;
 
-  constructor(apiKey: string, private readonly models: GeminiModels) {
+  constructor(
+    apiKey: string,
+    private readonly models: GeminiModels,
+    private readonly fallbacks: string[] = DEFAULT_FALLBACK_MODELS,
+  ) {
     this.client = new GoogleGenAI({ apiKey, httpOptions: { timeout: REQUEST_TIMEOUT_MS } });
   }
 
-  private async generate<T>(model: string, system: string, prompt: string, schema: Schema): Promise<T> {
-    try {
-      const response = await this.client.models.generateContent({
-        model,
-        contents: prompt,
-        config: {
-          systemInstruction: `${system}\n\n${COMMON_RULES}`,
-          responseMimeType: "application/json",
-          responseSchema: schema,
-          temperature: 0.3,
-        },
-      });
-      const text = response.text;
-      if (!text) throw new Error("El modelo no ha devuelto contenido");
-      return JSON.parse(text) as T;
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 429) {
-        throw new RateLimitError(parseRetryDelay(error.message), error.message);
+  /**
+   * Llama al modelo del agente y, si está saturado (503), agota el tiempo en el servidor (504)
+   * o ya no está disponible (404), prueba el siguiente de la cadena. Si todos fallan por
+   * saturación, RateLimitError: el paso se reintenta más tarde sin contar como error.
+   */
+  private async generate<T>(
+    model: string,
+    system: string,
+    prompt: string,
+    schema: Schema,
+  ): Promise<{ data: T } & Required<ModelInfo>> {
+    const deadline = Date.now() + REQUEST_TIMEOUT_MS;
+    const failed: string[] = [];
+    let transient = false;
+    let lastError: unknown = null;
+
+    for (const candidate of modelChain(model, this.fallbacks)) {
+      const remaining = deadline - Date.now();
+      if (failed.length > 0 && remaining < MIN_ATTEMPT_MS) break;
+      try {
+        const response = await this.client.models.generateContent({
+          model: candidate,
+          contents: prompt,
+          config: {
+            systemInstruction: `${system}\n\n${COMMON_RULES}`,
+            responseMimeType: "application/json",
+            responseSchema: schema,
+            temperature: 0.3,
+            httpOptions: { timeout: remaining },
+          },
+        });
+        const text = response.text;
+        if (!text) throw new Error(`El modelo ${candidate} no ha devuelto contenido`);
+        return { data: JSON.parse(text) as T, model: candidate, fallbackFrom: failed };
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 429) {
+          throw new RateLimitError(parseRetryDelay(error.message), error.message);
+        }
+        if (error instanceof ApiError && FALLBACK_STATUSES.includes(error.status)) {
+          failed.push(`${candidate} (${error.status})`);
+          transient ||= TRANSIENT_STATUSES.includes(error.status);
+          lastError = error;
+          continue;
+        }
+        throw error;
       }
-      // "The model is overloaded": frecuente en el plan gratuito y pasajero; no debe contar como error.
-      if (error instanceof ApiError && error.status === 503) {
-        throw new RateLimitError(OVERLOADED_RETRY_SECONDS, error.message, true);
-      }
-      throw error;
     }
+
+    // Frecuente en el plan gratuito y pasajero: no debe contar como error del run.
+    if (transient) {
+      throw new RateLimitError(OVERLOADED_RETRY_SECONDS, `Modelos saturados: ${failed.join(", ")}`, true);
+    }
+    throw lastError;
   }
 
-  async plan({ request, files }: { request: string; files: SiteFiles }): Promise<PlannedTask[]> {
-    const out = await this.generate<{ tasks: PlannedTask[] }>(
+  async plan({ request, files }: { request: string; files: SiteFiles }): Promise<PlanOutput> {
+    const { data, ...info } = await this.generate<{ tasks: PlannedTask[] }>(
       this.models.orchestrator,
       `Eres el agente Orquestador de un equipo de tres agentes (Orquestador, Develop y Testing).
 Divide la petición del usuario en entre 1 y 5 tareas de desarrollo pequeñas, ordenadas e independientes en lo posible.
@@ -175,7 +245,7 @@ Cada tarea lleva entre 1 y 4 criterios de aceptación concretos y verificables l
       `Petición del usuario: ${request}\n\nArchivos actuales de la web:\n\n${renderFiles(files)}`,
       planSchema,
     );
-    return out.tasks ?? [];
+    return { tasks: data.tasks ?? [], ...info };
   }
 
   async develop({
@@ -189,7 +259,7 @@ Cada tarea lleva entre 1 y 4 criterios de aceptación concretos y verificables l
     feedback: string | null;
     files: SiteFiles;
   }): Promise<DevelopOutput> {
-    const out = await this.generate<{ summary: string; changes: FileChange[] }>(
+    const { data, ...info } = await this.generate<{ summary: string; changes: FileChange[] }>(
       this.models.develop,
       `Eres el agente Develop. Implementas una sola tarea sobre la web.
 Devuelve solo los archivos que cambian. En create y update, "content" es el contenido COMPLETO del archivo
@@ -204,11 +274,11 @@ Archivos actuales de la web:
 ${renderFiles(files)}`,
       developSchema,
     );
-    return { summary: out.summary ?? "", changes: out.changes ?? [] };
+    return { summary: data.summary ?? "", changes: data.changes ?? [], ...info };
   }
 
   async review({ request, task, files }: { request: string; task: TaskInput; files: SiteFiles }): Promise<ReviewOutput> {
-    const out = await this.generate<ReviewOutput>(
+    const { data, ...info } = await this.generate<ReviewOutput>(
       this.models.testing,
       `Eres el agente Testing. Revisas si el código cumple cada criterio de aceptación de una tarea.
 Evalúa cada criterio por separado leyendo los archivos; sé estricto pero no inventes requisitos nuevos.
@@ -217,10 +287,10 @@ Devuelve un resultado por criterio, en el mismo orden, con un motivo breve y con
       `Petición original: ${request}\n\n${renderTask(task)}\n\nArchivos de la web tras el trabajo de Develop:\n\n${renderFiles(files)}`,
       reviewSchema,
     );
-    return { passed: Boolean(out.passed), results: out.results ?? [] };
+    return { passed: Boolean(data.passed), results: data.results ?? [], ...info };
   }
 
-  async summarize({ request, tasks }: { request: string; tasks: SummaryTask[] }): Promise<string> {
+  async summarize({ request, tasks }: { request: string; tasks: SummaryTask[] }): Promise<SummaryOutput> {
     const lines = tasks
       .map(
         (t) =>
@@ -229,13 +299,13 @@ Devuelve un resultado por criterio, en el mismo orden, con un motivo breve y con
           }`,
       )
       .join("\n");
-    const out = await this.generate<{ summary: string }>(
+    const { data, ...info } = await this.generate<{ summary: string }>(
       this.models.orchestrator,
       `Eres el agente Orquestador. Redacta un resumen final breve (3-6 frases, en español) para el usuario:
 qué se ha hecho y, si alguna tarea ha quedado bloqueada, por qué y qué haría falta para terminarla.`,
       `Petición: ${request}\n\nResultado de las tareas:\n${lines}`,
       summarySchema,
     );
-    return out.summary ?? "";
+    return { summary: data.summary ?? "", ...info };
   }
 }

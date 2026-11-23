@@ -1,14 +1,15 @@
 /**
- * Comprueba la clave de Gemini y los modelos configurados para cada agente.
+ * Comprueba la clave de Gemini, los modelos de cada agente y los de respaldo.
  *
  *   npx tsx scripts/check-gemini.ts
  *
- * Lee GEMINI_API_KEY y GEMINI_MODEL_* del entorno o de .env.local (la clave no se imprime).
+ * Lee GEMINI_API_KEY, GEMINI_MODEL_* y GEMINI_FALLBACK_MODELS del entorno o de .env.local (la clave no se imprime).
  * 1. Lista los modelos de la cuenta que contienen «flash».
- * 2. Hace una llamada mínima con JSON estructurado a cada modelo configurado.
+ * 2. Hace una llamada mínima con JSON estructurado a cada modelo configurado y de respaldo.
+ * Un 503 suele ser saturación pasajera del plan gratuito: repetir más tarde antes de descartar el modelo.
  */
 import { ApiError, GoogleGenAI, Type } from "@google/genai";
-import { resolveGeminiModels } from "../lib/llm/gemini";
+import { resolveFallbackModels, resolveGeminiModels } from "../lib/llm/gemini";
 
 try {
   process.loadEnvFile(".env.local");
@@ -35,6 +36,9 @@ async function main() {
   for (const [agent, model] of Object.entries(models)) {
     agentsByModel.set(model, [...(agentsByModel.get(model) ?? []), agent]);
   }
+  for (const model of resolveFallbackModels(process.env)) {
+    agentsByModel.set(model, [...(agentsByModel.get(model) ?? []), "respaldo"]);
+  }
 
   console.log("\nLlamada de prueba a los modelos configurados:");
   let failures = 0;
@@ -56,7 +60,7 @@ async function main() {
     } catch (error) {
       failures += 1;
       const status = error instanceof ApiError ? `HTTP ${error.status}: ` : "";
-      const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+      const message = (error instanceof Error ? error.message : String(error)).replaceAll(apiKey, "***").slice(0, 300);
       console.log(`  FALLO  ${label}: ${status}${message}`);
     }
   }

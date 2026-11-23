@@ -135,8 +135,9 @@ describe("máquina de estados con el proveedor mock", () => {
     const repo = new MemoryRepository();
     const runId = await newRun(repo, "Muchas cosas");
     const provider = providerWith({
-      plan: async () =>
-        Array.from({ length: 8 }, (_, i) => ({ title: `T${i}`, description: "", acceptance_criteria: ["c"] })),
+      plan: async () => ({
+        tasks: Array.from({ length: 8 }, (_, i) => ({ title: `T${i}`, description: "", acceptance_criteria: ["c"] })),
+      }),
     });
     await step(repo, provider, runId);
     expect(await repo.listTasks(runId)).toHaveLength(LIMITS.maxTasks);
@@ -146,11 +147,30 @@ describe("máquina de estados con el proveedor mock", () => {
     const repo = new MemoryRepository();
     const runId = await newRun(repo, "Añade un modo oscuro");
     const provider = providerWith({
-      plan: async () => [{ title: "Hacer algo", description: "", acceptance_criteria: [] }],
+      plan: async () => ({ tasks: [{ title: "Hacer algo", description: "", acceptance_criteria: [] }] }),
     });
     await step(repo, provider, runId);
     const [task] = await repo.listTasks(runId);
     expect(task.acceptance_criteria).toEqual(["La tarea «Hacer algo» está implementada en la web"]);
+  });
+});
+
+describe("modelo que responde", () => {
+  it("queda en el payload del evento, con el respaldo si lo hubo", async () => {
+    const repo = new MemoryRepository();
+    const runId = await newRun(repo, "Añade una página de contacto");
+    const mock = new MockProvider();
+    const provider = providerWith({
+      plan: async (i) => ({ ...(await mock.plan(i)), model: "m-orq" }),
+      develop: async (i) => ({ ...(await mock.develop(i)), model: "m-2", fallbackFrom: ["m-dev (503)"] }),
+    });
+    await step(repo, provider, runId); // plan
+    await step(repo, provider, runId); // develop
+    const plan = repo.events.find((e) => e.kind === "plan");
+    const change = repo.events.find((e) => e.kind === "change");
+    expect(plan?.payload).toMatchObject({ model: "m-orq" });
+    expect(plan?.payload).not.toHaveProperty("fallbackFrom");
+    expect(change?.payload).toMatchObject({ model: "m-2", fallbackFrom: ["m-dev (503)"] });
   });
 });
 
@@ -195,7 +215,7 @@ describe("bucle fallo → reintento → bloqueo", () => {
     const runId = await newRun(repo, "Rompe la portada");
     const review = vi.fn();
     const provider = providerWith({
-      plan: async () => [{ title: "Romper", description: "", acceptance_criteria: ["x"] }],
+      plan: async () => ({ tasks: [{ title: "Romper", description: "", acceptance_criteria: ["x"] }] }),
       develop: async () => ({ summary: "roto", changes: [{ path: "index.html", action: "update", content: "" }] }),
       review,
     });

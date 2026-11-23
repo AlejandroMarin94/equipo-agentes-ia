@@ -1,5 +1,13 @@
 import type { FileChange, SiteFiles } from "../types";
-import type { AgentProvider, DevelopOutput, PlannedTask, ReviewOutput, TaskInput } from "./types";
+import type {
+  AgentProvider,
+  DevelopOutput,
+  PlannedTask,
+  PlanOutput,
+  ReviewOutput,
+  SummaryOutput,
+  TaskInput,
+} from "./types";
 
 /**
  * Proveedor determinista para desarrollar y probar sin clave de API.
@@ -301,13 +309,15 @@ export class MockProvider implements AgentProvider {
     if (this.delayMs > 0) await new Promise((r) => setTimeout(r, this.delayMs));
   }
 
-  async plan({ request }: Parameters<AgentProvider["plan"]>[0]): Promise<PlannedTask[]> {
+  async plan({ request }: Parameters<AgentProvider["plan"]>[0]): Promise<PlanOutput> {
     await this.wait();
-    return recipeFor(request).tasks.map(({ title, description, acceptance_criteria }) => ({
-      title,
-      description,
-      acceptance_criteria,
-    }));
+    return {
+      tasks: recipeFor(request).tasks.map(({ title, description, acceptance_criteria }) => ({
+        title,
+        description,
+        acceptance_criteria,
+      })),
+    };
   }
 
   async develop({ request, task, files }: Parameters<AgentProvider["develop"]>[0]): Promise<DevelopOutput> {
@@ -334,7 +344,7 @@ export class MockProvider implements AgentProvider {
     return { passed: results.every((r) => r.ok), results };
   }
 
-  async summarize({ tasks }: Parameters<AgentProvider["summarize"]>[0]): Promise<string> {
+  async summarize({ tasks }: Parameters<AgentProvider["summarize"]>[0]): Promise<SummaryOutput> {
     await this.wait();
     const done = tasks.filter((t) => t.status === "done");
     const blocked = tasks.filter((t) => t.status === "blocked");
@@ -345,6 +355,6 @@ export class MockProvider implements AgentProvider {
         .map((t) => `«${t.title}» (último fallo: ${t.last_feedback ?? "sin detalle"})`)
         .join("; ")}.`;
     }
-    return text;
+    return { summary: text };
   }
 }

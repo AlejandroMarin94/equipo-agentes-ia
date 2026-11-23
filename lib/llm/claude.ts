@@ -107,7 +107,7 @@ export function claudeOptions(
 ): Options {
   return {
     model,
-    systemPrompt: `${request.system}\n\nResponde SOLO con un objeto JSON válido, sin texto alrededor ni bloques de código, que siga este esquema JSON:\n${JSON.stringify(request.output.schema)}`,
+    systemPrompt: `${request.system}\n\nResponde SOLO con un objeto JSON válido, sin texto alrededor ni bloques de código, que siga este esquema JSON:\n${JSON.stringify(request.output)}`,
     tools: [],
     allowedTools: [],
     mcpServers: {},

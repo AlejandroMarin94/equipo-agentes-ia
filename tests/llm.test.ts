@@ -335,7 +335,7 @@ describe("CLI de Claude comprimido (Vercel)", () => {
 
 describe("esquemas", () => {
   it("validación mínima de la forma", () => {
-    const schema = DEVELOP_SCHEMA.schema;
+    const schema = DEVELOP_SCHEMA;
     expect(shapeError({ summary: "s", changes: [{ path: "a", action: "delete" }] }, schema)).toBeNull();
     expect(shapeError({ summary: "s", changes: [{ path: "a", action: "borrar" }] }, schema)).toMatch(/action/);
     expect(shapeError({ summary: "s" }, schema)).toBe("falta respuesta.changes");

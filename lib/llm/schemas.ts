@@ -1,7 +1,6 @@
 /**
- * Esquemas de salida de los agentes, en JSON Schema plano: van en el prompt de sistema y la respuesta
- * se valida contra ellos (`shapeError`). Todos los campos en `required`, `additionalProperties: false`
- * y los opcionales como `["string", "null"]`.
+ * Esquemas de salida de los agentes, en JSON Schema: van en el prompt de sistema y la respuesta
+ * se valida contra ellos (`shapeError`).
  */
 export interface JsonSchema {
   type: "object" | "array" | "string" | "boolean" | ["string", "null"];
@@ -10,11 +9,6 @@ export interface JsonSchema {
   additionalProperties?: false;
   items?: JsonSchema;
   enum?: string[];
-}
-
-export interface OutputSchema {
-  name: string;
-  schema: JsonSchema;
 }
 
 const object = (properties: Record<string, JsonSchema>): JsonSchema => ({
@@ -27,40 +21,28 @@ const string: JsonSchema = { type: "string" };
 const boolean: JsonSchema = { type: "boolean" };
 const arrayOf = (items: JsonSchema): JsonSchema => ({ type: "array", items });
 
-export const PLAN_SCHEMA: OutputSchema = {
-  name: "plan",
-  schema: object({
-    tasks: arrayOf(object({ title: string, description: string, acceptance_criteria: arrayOf(string) })),
-  }),
-};
+export const PLAN_SCHEMA = object({
+  tasks: arrayOf(object({ title: string, description: string, acceptance_criteria: arrayOf(string) })),
+});
 
-export const DEVELOP_SCHEMA: OutputSchema = {
-  name: "develop",
-  schema: object({
-    summary: string,
-    changes: arrayOf(
-      object({
-        path: string,
-        action: { type: "string", enum: ["create", "update", "delete"] },
-        // null en delete.
-        content: { type: ["string", "null"] },
-      }),
-    ),
-  }),
-};
+export const DEVELOP_SCHEMA = object({
+  summary: string,
+  changes: arrayOf(
+    object({
+      path: string,
+      action: { type: "string", enum: ["create", "update", "delete"] },
+      // null en delete.
+      content: { type: ["string", "null"] },
+    }),
+  ),
+});
 
-export const REVIEW_SCHEMA: OutputSchema = {
-  name: "review",
-  schema: object({
-    passed: boolean,
-    results: arrayOf(object({ criterion: string, ok: boolean, reason: string })),
-  }),
-};
+export const REVIEW_SCHEMA = object({
+  passed: boolean,
+  results: arrayOf(object({ criterion: string, ok: boolean, reason: string })),
+});
 
-export const SUMMARY_SCHEMA: OutputSchema = {
-  name: "summary",
-  schema: object({ summary: string }),
-};
+export const SUMMARY_SCHEMA = object({ summary: string });
 
 const nullable = (schema: JsonSchema) => Array.isArray(schema.type);
 

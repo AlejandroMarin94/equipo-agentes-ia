@@ -1,4 +1,4 @@
-import { shapeError, type OutputSchema } from "./schemas";
+import { shapeError, type JsonSchema } from "./schemas";
 import { PublicError, RateLimitError, type ModelInfo } from "./types";
 
 /**
@@ -35,7 +35,7 @@ export function resolveModels(env: Record<string, string | undefined>): Record<A
 export interface LlmRequest {
   system: string;
   prompt: string;
-  output: OutputSchema;
+  output: JsonSchema;
   timeoutMs: number;
 }
 
@@ -86,14 +86,14 @@ function extractJson(text: string): string {
 }
 
 /** JSON con la forma del esquema, o ModelError("invalid_output"). */
-export function parseOutput<T>(text: string, output: OutputSchema): T {
+export function parseOutput<T>(text: string, output: JsonSchema): T {
   let data: unknown;
   try {
     data = JSON.parse(extractJson(text));
   } catch {
     throw new ModelError("invalid_output", `JSON no válido: ${text.slice(0, 200)}`);
   }
-  const problem = shapeError(data, output.schema);
+  const problem = shapeError(data, output);
   if (problem) throw new ModelError("invalid_output", `JSON con forma incorrecta: ${problem}`);
   return data as T;
 }

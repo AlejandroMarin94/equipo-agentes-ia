@@ -299,6 +299,14 @@ async function testStep(repo: Repository, provider: AgentProvider, run: Run) {
     });
   } else {
     const failures = results.filter((r) => !r.ok);
+    // Testing dijo que no pasa sin señalar ningún criterio (o no devolvió ninguno): Develop necesita un motivo.
+    if (failures.length === 0) {
+      failures.push({
+        criterion: "Revisión de Testing",
+        ok: false,
+        reason: "Testing no ha dado la tarea por buena, pero no ha indicado qué criterio falla.",
+      });
+    }
     const skippedLlm = !automatic.every((r) => r.ok)
       ? "\n(Las comprobaciones automáticas fallan; los criterios de aceptación se revisarán cuando estén corregidas.)"
       : "";

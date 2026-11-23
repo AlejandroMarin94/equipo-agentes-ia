@@ -175,6 +175,18 @@ describe("bucle fallo → reintento → bloqueo", () => {
     expect(task.status).toBe("failed");
     expect(task.last_feedback).toContain("[Automática]");
   });
+
+  it("si Testing rechaza sin señalar criterios, Develop recibe igualmente un motivo", async () => {
+    const repo = new MemoryRepository();
+    const runId = await newRun(repo, "Añade un modo oscuro");
+    const provider = providerWith({ review: async () => ({ passed: false, results: [] }) });
+    await step(repo, provider, runId); // plan
+    await step(repo, provider, runId); // develop
+    await step(repo, provider, runId); // test
+    const [task] = await repo.listTasks(runId);
+    expect(task.status).toBe("failed");
+    expect(task.last_feedback).toContain("no ha indicado qué criterio falla");
+  });
 });
 
 describe("límites de la API, errores y bloqueo", () => {

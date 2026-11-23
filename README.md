@@ -58,8 +58,26 @@ Lo que falla se guarda en `tasks.last_feedback` y es lo que recibe Develop en el
 
 `LLM_PROVIDER=gemini|mock`:
 
-- `gemini`: los agentes reales. Modelo configurable con `GEMINI_MODEL` (por defecto `gemini-2.5-flash`).
+- `gemini`: los agentes reales, cada uno con su modelo (ver abajo).
 - `mock`: respuestas deterministas y plausibles sin clave de API, para desarrollar, probar y enseñar el flujo. Reconoce las peticiones de ejemplo (contacto, precios, modo oscuro) y la primera tarea falla siempre la primera revisión de Testing, para que se vea el bucle fallo → corrección → aprobado.
+
+### Modelo de cada agente
+
+La cuota gratuita de Gemini va por modelo, y los agentes no gastan igual: el Orquestador hace 2 llamadas por ejecución (planificar y resumir) y Develop y Testing hacen el resto (hasta ~30). Por eso cada agente tiene su modelo:
+
+| Agente | Variable | Por defecto |
+|---|---|---|
+| Orquestador | `GEMINI_MODEL_ORCHESTRATOR` | `gemini-3.8-flash` (Flash: mejor para planificar, menos cuota) |
+| Develop | `GEMINI_MODEL_DEVELOP` | `gemini-3.5-flash-lite` (Flash-Lite: más peticiones al día) |
+| Testing | `GEMINI_MODEL_TESTING` | `gemini-3.5-flash-lite` |
+
+Si falta la variable de un agente se usa `GEMINI_MODEL`, y si tampoco está, el valor por defecto. Los nombres por defecto son los Flash y Flash-Lite más recientes que aparecen en los tipos de `@google/genai` 3.6.1; **que estén disponibles para tu clave y en el plan gratuito se comprueba con la clave**:
+
+```bash
+GEMINI_API_KEY=... npx tsx scripts/check-gemini.ts   # o con la clave en .env.local
+```
+
+El script lista los modelos «flash» de la cuenta y hace una llamada mínima con JSON estructurado a cada modelo configurado. Las cuotas exactas de cada modelo se ven en AI Studio.
 
 ### Estructura
 
@@ -123,7 +141,8 @@ El script lee `NEXT_PUBLIC_SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` de `.env.
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clave pública (anon o publishable). Navegador y servidor |
 | `SUPABASE_SERVICE_ROLE_KEY` | Solo servidor: escrituras del motor y vista previa |
 | `GEMINI_API_KEY` | Solo servidor |
-| `GEMINI_MODEL` | Opcional, por defecto `gemini-2.5-flash` |
+| `GEMINI_MODEL_ORCHESTRATOR`, `GEMINI_MODEL_DEVELOP`, `GEMINI_MODEL_TESTING` | Opcionales: modelo de cada agente (ver «Modelo de cada agente») |
+| `GEMINI_MODEL` | Opcional: respaldo común para el agente que no tenga su variable |
 | `LLM_PROVIDER` | `gemini` (por defecto) o `mock` |
 | `MAX_RUNS_PER_DAY` | Ejecuciones por usuario cada 24 h, por defecto 15 |
 | `MOCK_DELAY_MS` | Opcional, retardo simulado del modo mock (por defecto 1500 ms) |

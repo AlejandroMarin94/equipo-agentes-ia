@@ -23,10 +23,6 @@ interface MockTask extends PlannedTask {
   flaw?: { criterion: number; reason: string };
 }
 
-interface Recipe {
-  tasks: MockTask[];
-}
-
 const htmlPages = (files: SiteFiles) => Object.keys(files).filter((p) => p.endsWith(".html")).sort();
 
 function addMenuLink(html: string, href: string, label: string): string {
@@ -64,24 +60,23 @@ ${body}
 `;
 }
 
-const contactRecipe: Recipe = {
-  tasks: [
-    {
-      title: "Crear la página de contacto",
-      description: "Crear contacto.html con la misma cabecera y pie que el resto de páginas y un formulario de contacto.",
-      acceptance_criteria: [
-        "Existe contacto.html con la misma cabecera y pie que index.html",
-        "El formulario tiene los campos nombre, email y mensaje, todos obligatorios",
-        "El campo de email es de tipo email para que el navegador valide el formato",
-      ],
-      flaw: {
-        criterion: 2,
-        reason: 'El campo de email es type="text" y ningún campo tiene el atributo required.',
-      },
-      build(files, flawed) {
-        const req = flawed ? "" : " required";
-        const emailType = flawed ? "text" : "email";
-        const body = `    <section class="contenido">
+const contactRecipe: MockTask[] = [
+  {
+    title: "Crear la página de contacto",
+    description: "Crear contacto.html con la misma cabecera y pie que el resto de páginas y un formulario de contacto.",
+    acceptance_criteria: [
+      "Existe contacto.html con la misma cabecera y pie que index.html",
+      "El formulario tiene los campos nombre, email y mensaje, todos obligatorios",
+      "El campo de email es de tipo email para que el navegador valide el formato",
+    ],
+    flaw: {
+      criterion: 2,
+      reason: 'El campo de email es type="text" y ningún campo tiene el atributo required.',
+    },
+    build(files, flawed) {
+      const req = flawed ? "" : " required";
+      const emailType = flawed ? "text" : "email";
+      const body = `    <section class="contenido">
       <h1>Contacto</h1>
       <p>¿Encargos para eventos o alguna duda? Escríbenos y te respondemos en el día.</p>
       <form class="formulario" action="#" method="post">
@@ -94,149 +89,145 @@ const contactRecipe: Recipe = {
         <button type="submit">Enviar</button>
       </form>
     </section>`;
-        return [{ path: "contacto.html", action: "create", content: pageShell(files, "Contacto", body) }];
-      },
+      return [{ path: "contacto.html", action: "create", content: pageShell(files, "Contacto", body) }];
     },
-    {
-      title: "Enlazar la página de contacto desde el menú",
-      description: "Añadir el enlace «Contacto» al menú de navegación de todas las páginas.",
-      acceptance_criteria: ["El menú de todas las páginas HTML incluye un enlace a contacto.html"],
-      build(files) {
-        return htmlPages(files).map((path) => ({
-          path,
-          action: "update" as const,
-          content: addMenuLink(files[path], "contacto.html", "Contacto"),
-        }));
-      },
+  },
+  {
+    title: "Enlazar la página de contacto desde el menú",
+    description: "Añadir el enlace «Contacto» al menú de navegación de todas las páginas.",
+    acceptance_criteria: ["El menú de todas las páginas HTML incluye un enlace a contacto.html"],
+    build(files) {
+      return htmlPages(files).map((path) => ({
+        path,
+        action: "update" as const,
+        content: addMenuLink(files[path], "contacto.html", "Contacto"),
+      }));
     },
-    {
-      title: "Dar estilo al formulario de contacto",
-      description: "Añadir estilos al formulario coherentes con la paleta de la web.",
-      acceptance_criteria: [
-        "styles.css incluye estilos para .formulario",
-        "Los campos ocupan el ancho disponible y el botón usa el color de acento",
-      ],
-      build(files) {
-        const css = files["styles.css"] ?? "";
-        if (css.includes(".formulario")) return [];
-        return [
-          {
-            path: "styles.css",
-            action: "update",
-            content: `${css}
+  },
+  {
+    title: "Dar estilo al formulario de contacto",
+    description: "Añadir estilos al formulario coherentes con la paleta de la web.",
+    acceptance_criteria: [
+      "styles.css incluye estilos para .formulario",
+      "Los campos ocupan el ancho disponible y el botón usa el color de acento",
+    ],
+    build(files) {
+      const css = files["styles.css"] ?? "";
+      if (css.includes(".formulario")) return [];
+      return [
+        {
+          path: "styles.css",
+          action: "update",
+          content: `${css}
 .formulario { display: grid; gap: 0.5rem; max-width: 520px; }
 .formulario input,
 .formulario textarea { width: 100%; padding: 0.6rem; border: 1px solid #d8c4a8; border-radius: 6px; font: inherit; }
 .formulario button { justify-self: start; padding: 0.6rem 1.4rem; border: 0; border-radius: 6px; background: var(--color-acento); color: #fff; font: inherit; cursor: pointer; }
 `,
-          },
-        ];
-      },
+        },
+      ];
     },
-  ],
-};
+  },
+];
 
-const pricingRecipe: Recipe = {
-  tasks: [
-    {
-      title: "Añadir la sección de precios a la portada",
-      description: "Añadir en index.html una sección «Precios» con los productos principales y su precio.",
-      acceptance_criteria: [
-        "index.html tiene una sección con id=\"precios\" y un título «Precios»",
-        "La sección lista al menos tres productos, cada uno con su precio en euros",
-      ],
-      flaw: { criterion: 1, reason: "Solo aparecen dos productos y uno de ellos no tiene precio." },
-      build(files, flawed) {
-        const items = flawed
-          ? `          <li><span>Hogaza de centeno</span> <strong>4,50 €</strong></li>
+const pricingRecipe: MockTask[] = [
+  {
+    title: "Añadir la sección de precios a la portada",
+    description: "Añadir en index.html una sección «Precios» con los productos principales y su precio.",
+    acceptance_criteria: [
+      "index.html tiene una sección con id=\"precios\" y un título «Precios»",
+      "La sección lista al menos tres productos, cada uno con su precio en euros",
+    ],
+    flaw: { criterion: 1, reason: "Solo aparecen dos productos y uno de ellos no tiene precio." },
+    build(files, flawed) {
+      const items = flawed
+        ? `          <li><span>Hogaza de centeno</span> <strong>4,50 €</strong></li>
           <li><span>Barra rústica</span></li>`
-          : `          <li><span>Hogaza de centeno</span> <strong>4,50 €</strong></li>
+        : `          <li><span>Hogaza de centeno</span> <strong>4,50 €</strong></li>
           <li><span>Barra rústica</span> <strong>1,20 €</strong></li>
           <li><span>Cruasán de mantequilla</span> <strong>1,60 €</strong></li>`;
-        const section = `    <section id="precios" class="precios">
+      const section = `    <section id="precios" class="precios">
       <h2>Precios</h2>
       <ul class="lista-precios">
 ${items}
       </ul>
     </section>`;
-        const base = (files["index.html"] ?? "").replace(/\n\s*<section id="precios"[\s\S]*?<\/section>/, "");
-        return [{ path: "index.html", action: "update", content: insertBeforeMainEnd(base, section) }];
-      },
+      const base = (files["index.html"] ?? "").replace(/\n\s*<section id="precios"[\s\S]*?<\/section>/, "");
+      return [{ path: "index.html", action: "update", content: insertBeforeMainEnd(base, section) }];
     },
-    {
-      title: "Dar estilo a la lista de precios",
-      description: "Estilos para que cada producto y su precio se lean alineados.",
-      acceptance_criteria: ["styles.css incluye estilos para .lista-precios con producto y precio alineados"],
-      build(files) {
-        const css = files["styles.css"] ?? "";
-        if (css.includes(".lista-precios")) return [];
-        return [
-          {
-            path: "styles.css",
-            action: "update",
-            content: `${css}
+  },
+  {
+    title: "Dar estilo a la lista de precios",
+    description: "Estilos para que cada producto y su precio se lean alineados.",
+    acceptance_criteria: ["styles.css incluye estilos para .lista-precios con producto y precio alineados"],
+    build(files) {
+      const css = files["styles.css"] ?? "";
+      if (css.includes(".lista-precios")) return [];
+      return [
+        {
+          path: "styles.css",
+          action: "update",
+          content: `${css}
 .lista-precios { list-style: none; padding: 0; max-width: 480px; }
 .lista-precios li { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px dashed #d8c4a8; }
 .lista-precios strong { color: var(--color-acento); }
 `,
-          },
-        ];
-      },
+        },
+      ];
     },
-  ],
-};
+  },
+];
 
-const darkModeRecipe: Recipe = {
-  tasks: [
-    {
-      title: "Definir los colores del modo oscuro",
-      description: "Añadir en styles.css una variante oscura de las variables de color, activada con la clase .oscuro en <body>.",
-      acceptance_criteria: [
-        "styles.css define body.oscuro con colores de fondo y texto oscuros",
-        "Las tarjetas también cambian de color en modo oscuro",
-      ],
-      flaw: { criterion: 1, reason: "body.oscuro cambia el fondo, pero --color-tarjeta sigue siendo blanco." },
-      build(files, flawed) {
-        const css = (files["styles.css"] ?? "").replace(/\nbody\.oscuro \{[\s\S]*?\}\n/, "\n");
-        const tarjeta = flawed ? "" : "\n  --color-tarjeta: #3a2f26;";
-        return [
-          {
-            path: "styles.css",
-            action: "update",
-            content: `${css}
+const darkModeRecipe: MockTask[] = [
+  {
+    title: "Definir los colores del modo oscuro",
+    description: "Añadir en styles.css una variante oscura de las variables de color, activada con la clase .oscuro en <body>.",
+    acceptance_criteria: [
+      "styles.css define body.oscuro con colores de fondo y texto oscuros",
+      "Las tarjetas también cambian de color en modo oscuro",
+    ],
+    flaw: { criterion: 1, reason: "body.oscuro cambia el fondo, pero --color-tarjeta sigue siendo blanco." },
+    build(files, flawed) {
+      const css = (files["styles.css"] ?? "").replace(/\nbody\.oscuro \{[\s\S]*?\}\n/, "\n");
+      const tarjeta = flawed ? "" : "\n  --color-tarjeta: #3a2f26;";
+      return [
+        {
+          path: "styles.css",
+          action: "update",
+          content: `${css}
 body.oscuro {
   --color-fondo: #1f1a16;
   --color-texto: #f3e9dc;${tarjeta}
 }
 `,
-          },
-        ];
-      },
+        },
+      ];
     },
-    {
-      title: "Añadir el botón para alternar el modo oscuro",
-      description: "Botón en la cabecera de todas las páginas que activa o desactiva el modo oscuro y recuerda la elección.",
-      acceptance_criteria: [
-        "Todas las páginas tienen un botón con id=\"modo-oscuro\" en la cabecera",
-        "script.js alterna la clase .oscuro en <body> y guarda la preferencia en localStorage",
-      ],
-      build(files) {
-        const changes: FileChange[] = htmlPages(files)
-          .filter((p) => !files[p].includes('id="modo-oscuro"'))
-          .map((path) => ({
-            path,
-            action: "update" as const,
-            content: files[path].replace(
-              /(\n\s*<\/header>)/,
-              `\n    <button id="modo-oscuro" class="boton-modo" type="button">Modo oscuro</button>$1`,
-            ),
-          }));
-        const js = files["script.js"] ?? "";
-        if (!js.includes("modo-oscuro")) {
-          changes.push({
-            path: "script.js",
-            action: "update",
-            content: `${js}
+  },
+  {
+    title: "Añadir el botón para alternar el modo oscuro",
+    description: "Botón en la cabecera de todas las páginas que activa o desactiva el modo oscuro y recuerda la elección.",
+    acceptance_criteria: [
+      "Todas las páginas tienen un botón con id=\"modo-oscuro\" en la cabecera",
+      "script.js alterna la clase .oscuro en <body> y guarda la preferencia en localStorage",
+    ],
+    build(files) {
+      const changes: FileChange[] = htmlPages(files)
+        .filter((p) => !files[p].includes('id="modo-oscuro"'))
+        .map((path) => ({
+          path,
+          action: "update" as const,
+          content: files[path].replace(
+            /(\n\s*<\/header>)/,
+            `\n    <button id="modo-oscuro" class="boton-modo" type="button">Modo oscuro</button>$1`,
+          ),
+        }));
+      const js = files["script.js"] ?? "";
+      if (!js.includes("modo-oscuro")) {
+        changes.push({
+          path: "script.js",
+          action: "update",
+          content: `${js}
 function leerModo() {
   try { return localStorage.getItem("modo"); } catch (e) { return null; }
 }
@@ -253,44 +244,41 @@ document.addEventListener("DOMContentLoaded", function () {
   });
 });
 `,
-          });
-        }
-        return changes;
-      },
+        });
+      }
+      return changes;
     },
-  ],
-};
+  },
+];
 
-function genericRecipe(request: string): Recipe {
+function genericRecipe(request: string): MockTask[] {
   const text = request.replace(/[<>&"]/g, "");
-  return {
-    tasks: [
-      {
-        title: "Añadir una sección nueva en la portada",
-        description: `Añadir en index.html una sección que responda a la petición: «${text}».`,
-        acceptance_criteria: [
-          "index.html tiene una sección nueva con un título y un texto relacionados con la petición",
-          "La sección mantiene el estilo del resto de la portada",
-        ],
-        flaw: { criterion: 0, reason: "La sección se ha añadido sin título <h2>." },
-        build(files, flawed) {
-          const base = (files["index.html"] ?? "").replace(/\n\s*<section class="novedad">[\s\S]*?<\/section>/, "");
-          const title = flawed ? "" : "\n      <h2>Novedades</h2>";
-          const section = `    <section class="novedad">${title}
+  return [
+    {
+      title: "Añadir una sección nueva en la portada",
+      description: `Añadir en index.html una sección que responda a la petición: «${text}».`,
+      acceptance_criteria: [
+        "index.html tiene una sección nueva con un título y un texto relacionados con la petición",
+        "La sección mantiene el estilo del resto de la portada",
+      ],
+      flaw: { criterion: 0, reason: "La sección se ha añadido sin título <h2>." },
+      build(files, flawed) {
+        const base = (files["index.html"] ?? "").replace(/\n\s*<section class="novedad">[\s\S]*?<\/section>/, "");
+        const title = flawed ? "" : "\n      <h2>Novedades</h2>";
+        const section = `    <section class="novedad">${title}
       <p>${text}</p>
     </section>`;
-          return [{ path: "index.html", action: "update", content: insertBeforeMainEnd(base, section) }];
-        },
+        return [{ path: "index.html", action: "update", content: insertBeforeMainEnd(base, section) }];
       },
-    ],
-  };
+    },
+  ];
 }
 
 function normalize(text: string): string {
   return text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
-function recipeFor(request: string): Recipe {
+function recipeFor(request: string): MockTask[] {
   const r = normalize(request);
   if (r.includes("contact")) return contactRecipe;
   if (r.includes("precio") || r.includes("tarifa")) return pricingRecipe;
@@ -312,7 +300,7 @@ export class MockProvider implements AgentProvider {
   async plan({ request }: Parameters<AgentProvider["plan"]>[0]): Promise<PlanOutput> {
     await this.wait();
     return {
-      tasks: recipeFor(request).tasks.map(({ title, description, acceptance_criteria }) => ({
+      tasks: recipeFor(request).map(({ title, description, acceptance_criteria }) => ({
         title,
         description,
         acceptance_criteria,
@@ -322,7 +310,7 @@ export class MockProvider implements AgentProvider {
 
   async develop({ request, task, files }: Parameters<AgentProvider["develop"]>[0]): Promise<DevelopOutput> {
     await this.wait();
-    const recipeTask = recipeFor(request).tasks[task.position];
+    const recipeTask = recipeFor(request)[task.position];
     if (!recipeTask) return { summary: "No he encontrado nada que cambiar para esta tarea.", changes: [] };
     const flawed = Boolean(recipeTask.flaw) && isFirstTry(task);
     const changes = recipeTask.build(files, flawed);
@@ -334,7 +322,7 @@ export class MockProvider implements AgentProvider {
 
   async review({ request, task }: Parameters<AgentProvider["review"]>[0]): Promise<ReviewOutput> {
     await this.wait();
-    const recipeTask = recipeFor(request).tasks[task.position];
+    const recipeTask = recipeFor(request)[task.position];
     const flaw = recipeTask?.flaw && isFirstTry(task) ? recipeTask.flaw : null;
     const results = task.acceptance_criteria.map((criterion, i) =>
       flaw && flaw.criterion === i

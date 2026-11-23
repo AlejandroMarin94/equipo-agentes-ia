@@ -17,7 +17,7 @@ La web sobre la que trabajan es la de un negocio ficticio, la «Panadería La Es
 
 - **Next.js 16** (App Router, TypeScript, Tailwind) desplegado en **Vercel Hobby**.
 - **Supabase** (plan gratuito): Postgres, Auth (email + contraseña) y Realtime.
-- **LLM: Groq, Mistral y Google Gemini**, los tres en plan gratuito y sin tarjeta, con salida JSON estructurada. Groq y Mistral por su API compatible con OpenAI (`fetch` a `/chat/completions`, sin SDK); Gemini con el SDK `@google/genai`. Cada agente tiene su cadena de modelos (ver «Modelos de cada agente»).
+- **LLM: Claude** (Opus 5.5 para el Orquestador, Sonnet 5.5 para Develop y Testing) con la suscripción de Claude, mediante el **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) y `CLAUDE_CODE_OAUTH_TOKEN`. Ver «Modelos: por qué la suscripción de Claude».
 - **Vitest** para los tests de la lógica.
 
 ## Arquitectura
@@ -40,12 +40,13 @@ flowchart TD
 
 ### Un paso por petición (límite de Vercel)
 
-En Vercel Hobby ninguna función puede durar más de 300 s (con Fluid Compute), y una ejecución completa encadena hasta ~30 llamadas al LLM. Por eso el motor es una **máquina de estados que avanza un solo paso por llamada** (`POST /api/runs/[id]/step`, `maxDuration = 300`): cada paso hace como mucho una llamada al LLM, guarda el resultado en la base de datos y devuelve el estado. La página de la ejecución llama a `step` en bucle mientras la ejecución no haya terminado.
+En Vercel Hobby ninguna función puede durar más de 300 s (con Fluid Compute), y una ejecución completa encadena hasta ~32 llamadas al LLM. Por eso el motor es una **máquina de estados que avanza un solo paso por llamada** (`POST /api/runs/[id]/step`, `maxDuration = 300`): cada paso hace como mucho una llamada al LLM, guarda el resultado en la base de datos y devuelve el estado. La página de la ejecución llama a `step` en bucle mientras la ejecución no haya terminado.
 
 - **Bloqueo:** antes de avanzar, el paso hace un `update` condicional sobre `runs.locked_until` (solo gana quien lo encuentra vacío o caducado). Si hay dos pestañas abiertas, la segunda recibe `busy` y espera; nunca se ejecutan dos pasos del mismo run a la vez.
-- **Un modelo falla** (saturado, sin tiempo, sin cuota, no disponible, petición demasiado grande, JSON no válido…): se prueba el siguiente de la cadena del agente, aunque sea de otro proveedor (ver «Modelos de cada agente»). El `proveedor/modelo` que responde queda en el evento y se ve en el registro (en ámbar si ha sido un respaldo, con los que fallaron al pasar el ratón).
-- **Todos los modelos de la cadena saturados o sin cuota:** el run no falla. Se registra el evento «modelos saturados, reintento en 15 s» o, si la cuota diaria está agotada, «cuota de la API agotada hasta las HH:MM; reintento en 12 h 22 min», el paso responde `retryAfter`, el bloqueo se alarga hasta esa hora y el navegador espera y reintenta.
-- **Otros errores** (respuesta no válida, tiempo agotado…): se registran y se reintenta el paso; tras 3 errores seguidos el run se marca como `failed` con el motivo.
+- **Un modelo falla** (saturado, sin tiempo, en su límite de uso, no disponible o con JSON no válido dos veces): se prueba el siguiente modelo del agente (el Orquestador pasa de Opus a Sonnet). El modelo que responde queda en el evento y se ve en el registro (en ámbar si ha sido un respaldo, con los que fallaron al pasar el ratón).
+- **Claude saturado o en el límite de uso de la suscripción:** el run no falla. Se registra «Claude saturado…, reintento en 15 s» o «límite de uso de la suscripción alcanzado hasta las HH:MM», el paso responde `retryAfter`, el bloqueo se alarga hasta esa hora y el navegador espera y reintenta.
+- **Sin sesión, token rechazado o una credencial que no es la suscripción:** el run se marca como `failed` en el acto con el motivo (reintentar no lo arregla).
+- **Otros errores** (respuesta no válida, fallo del CLI…): se registran y se reintenta el paso; tras 3 errores seguidos el run se marca como `failed` con el motivo.
 - **Directo:** la interfaz se suscribe con Supabase Realtime a `runs`, `tasks` y `events`. Antes de cada llamada al LLM se escribe un evento «trabajando en…», así la tarjeta del agente activo se ilumina mientras piensa. Si Realtime no conecta, la página consulta la base de datos cada 2 s.
 
 ### Cómo comprueba Testing
@@ -57,40 +58,40 @@ Lo que falla se guarda en `tasks.last_feedback` y es lo que recibe Develop en el
 
 ### Proveedor de IA intercambiable
 
-`LLM_PROVIDER=real|mock`:
+`LLM_PROVIDER=claude|mock`:
 
-- `real` (por defecto; `gemini`, el valor antiguo, vale igual): los agentes reales, cada uno con su cadena de modelos (ver abajo).
-- `mock`: respuestas deterministas y plausibles sin clave de API, para desarrollar, probar y enseñar el flujo. Reconoce las peticiones de ejemplo (contacto, precios, modo oscuro) y la primera tarea falla siempre la primera revisión de Testing, para que se vea el bucle fallo → corrección → aprobado.
+- `claude` (por defecto): los agentes reales, con los modelos de cada uno (ver abajo).
+- `mock`: respuestas deterministas y plausibles sin gastar la suscripción, para desarrollar, probar y enseñar el flujo. Reconoce las peticiones de ejemplo (contacto, precios, modo oscuro) y la primera tarea falla siempre la primera revisión de Testing, para que se vea el bucle fallo → corrección → aprobado.
 
-### Modelos de cada agente
+### Modelos: por qué la suscripción de Claude
 
-El plan gratuito de Gemini resultó inservible para una demo: 503 casi siempre, una cuota diaria mínima y ejecuciones de más de 10 minutos. Por eso cada agente tiene una **cadena de modelos de varios proveedores**, todos con plan gratuito y sin tarjeta. Si el primero falla, se prueba el siguiente en la misma llamada:
+La primera versión usaba el plan gratuito de Google Gemini. En las pruebas respondía 503 (modelo saturado) en la mayoría de las llamadas, agotó la cuota diaria y una ejecución completa llegó a tardar más de 10 minutos. Para una demo que tiene que responder cuando la abra otra persona no era viable, así que los agentes usan Claude con una suscripción de Claude (el mismo modelo con el que se ha desarrollado el proyecto).
 
-| Agente | Principal | Respaldo, en orden | Por qué |
-|---|---|---|---|
-| Orquestador | Groq `openai/gpt-oss-120b` (`reasoning_effort: low`) | Groq `qwen/qwen3.8-27b` → Mistral `mistral-small-2603` → Gemini `gemini-3.5-flash` | 2 llamadas por ejecución con poco texto: Groq es el más rápido y cabe en su límite por petición. |
-| Develop | Mistral `mistral-large-4` | Mistral `mistral-small-2603` → Groq `openai/gpt-oss-120b` → Gemini `gemini-3.5-flash-lite` | Devuelve archivos completos (respuestas largas): Mistral admite peticiones grandes; Groq da 413 por encima de ~8 K tokens. |
-| Testing | Groq `openai/gpt-oss-120b` | Groq `qwen/qwen3.8-27b` → Groq `openai/gpt-oss-20b` → Mistral `mistral-small-2603` → Gemini `gemini-3.5-flash-lite` | Muchas llamadas con respuesta corta (un veredicto por criterio): rapidez de Groq, con varios modelos porque la cuota va por modelo. |
+| Agente | Modelo | Por qué |
+|---|---|---|
+| Orquestador | `claude-opus-5-5` (respaldo: `claude-sonnet-5-5`) | Hace de arquitecto: decide cómo se divide la petición y con qué criterios se aceptará cada tarea. Son 2 llamadas por ejecución y de ellas depende todo lo demás, así que va el modelo más capaz. |
+| Develop | `claude-sonnet-5-5` | Devuelve archivos completos en cada intento: hace falta rapidez para caber en el paso de 300 s. |
+| Testing | `claude-sonnet-5-5` | Una llamada por revisión, con respuesta corta (un veredicto por criterio). |
 
-Gemini queda al final de las tres porque su plan gratuito está casi siempre saturado.
-
-**Configuración.** `LLM_CHAIN_ORCHESTRATOR`, `LLM_CHAIN_DEVELOP` y `LLM_CHAIN_TESTING`, con eslabones `proveedor/modelo` separados por comas (el proveedor es lo que va antes de la primera barra: `groq/openai/gpt-oss-120b`). Proveedores: `groq`, `mistral` y `gemini`, con la clave en `GROQ_API_KEY`, `MISTRAL_API_KEY` y `GEMINI_API_KEY`. Un eslabón puede llevar opciones extra para la API tras `?` (`groq/openai/gpt-oss-120b?reasoning_effort=low`); `format=json_object` fuerza ese modo de JSON. Si una variable no está o está vacía, se usa la cadena de la tabla. **Un eslabón cuyo proveedor no tiene clave se salta** (queda en el log del servidor); si un agente se queda sin ninguno, es un error de configuración.
-
-**Cuándo se pasa al siguiente modelo:** con cualquier error de la API. En concreto: 5xx (saturado), 504 o corte por tiempo, sin conexión, 429 (cuota de ese modelo; se lee `retry-after` o el `retryDelay` de Gemini), 404 o «not available in your subscription tier» (modelo que no existe o no entra en el plan), 413 (petición demasiado grande: el límite gratuito de Groq es de unos 8 K tokens por minuto, contando la petición, el tope de salida y los tokens de razonamiento de gpt-oss), 401/403 (clave rechazada) y JSON no válido o con la forma incorrecta (también el `json_validate_failed` de Groq y las respuestas cortadas por `max_tokens`). Otro 400 también pasa al siguiente: puede ser un parámetro que ese modelo no admite; si es de la petición, fallarán todos y el error del paso lo dirá.
-
-**Al final de la cadena:** si algún modelo estaba saturado, sin tiempo o sin conexión, el paso se reintenta a los 15 s sin contar como error; si solo hubo 429, se espera la menor espera que haya pedido la API; si todos fallaron por otra cosa, es un error del paso (tras 3 seguidos, el run falla) con la lista de lo que ha fallado. Cada modelo tiene como mucho 120 s y la cadena entera, 240 s.
-
-**JSON estructurado.** Cada agente tiene un solo esquema en JSON Schema plano ([`lib/llm/schemas.ts`](lib/llm/schemas.ts)) escrito para el modo estricto (todos los campos en `required`, `additionalProperties: false`, opcionales como `["string", "null"]`). Groq con gpt-oss y Mistral lo reciben como `response_format: json_schema` estricto; los demás modelos de Groq, como `json_object` con el esquema en el mensaje de sistema; Gemini, convertido a su `responseSchema`. La respuesta se valida contra el mismo esquema antes de dársela al motor.
-
-**Migración desde la configuración solo de Gemini.** `GEMINI_MODEL`, `GEMINI_MODEL_ORCHESTRATOR`, `GEMINI_MODEL_DEVELOP`, `GEMINI_MODEL_TESTING` y `GEMINI_FALLBACK_MODELS` ya no se leen (si están, el servidor lo avisa en el log): bórralas y, si quieres otra cadena, ponla en `LLM_CHAIN_*` con el prefijo `gemini/`. Por ejemplo, la configuración anterior de Develop equivale a `LLM_CHAIN_DEVELOP=gemini/gemini-3.5-flash-lite,gemini/gemini-3.1-flash-lite,gemini/gemini-3.5-flash`. `LLM_PROVIDER=gemini` sigue funcionando como `real`.
-
-Para comprobar las claves y cada eslabón:
+Se cambian con `CLAUDE_MODELS_ORCHESTRATOR`, `CLAUDE_MODELS_DEVELOP` y `CLAUDE_MODELS_TESTING` (modelos separados por comas, el primero que responda). Para comprobar que entra por la suscripción y que cada modelo responde:
 
 ```bash
-npx tsx scripts/check-llm.ts                  # las tres cadenas; o solo algunas: ... develop testing
+npx tsx scripts/check-claude.ts
 ```
 
-Lee las claves de `.env.local` o del entorno, sin imprimirlas, y hace una llamada mínima con el esquema real de cada agente a cada eslabón: `proveedor/modelo`, OK / FALLO / SIN CLAVE, código HTTP y tiempo. Un 503 o un 429 suelen ser pasajeros: conviene repetir antes de descartar un modelo.
+**Suscripción, no API de pago.** El SDK lanza el CLI de Claude Code como subproceso ([`lib/llm/claude.ts`](lib/llm/claude.ts)):
+
+- El subproceso recibe un entorno mínimo construido desde cero (el SDK no lo mezcla con el de la app): `PATH`, idioma, certificados y proxy, `TZ` y `CLAUDE_CODE_OAUTH_TOKEN`. Nunca `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, las variables de Bedrock/Vertex/Foundry ni las de Supabase.
+- `HOME` y `CLAUDE_CONFIG_DIR` apuntan a un directorio vacío propio en `/tmp`, que también es el `cwd`: el CLI no ve el código de la app, ni ajustes, ni CLAUDE.md.
+- Solo generación: sin herramientas del SDK (`tools: []`), sin servidores MCP, sin `settingSources`, un único turno, sin guardar la sesión y con el prompt literal (`verbatimPrompts`: el HTML de la web no se interpreta como `@archivo` ni `/comando`).
+- Si el mensaje `init` del CLI dice que la credencial no es la suscripción (`apiKeySource` distinto de `none`) o anuncia alguna herramienta, la llamada se corta y el run falla con el motivo. También se corta si el CLI avisa de que está usando uso extra de pago (*overage*); conviene tenerlo desactivado en la cuenta.
+- En Vercel `CLAUDE_CODE_OAUTH_TOKEN` es obligatorio. En local, sin token, usa la sesión de Claude Code del equipo.
+
+**JSON.** Cada agente tiene su esquema en JSON Schema ([`lib/llm/schemas.ts`](lib/llm/schemas.ts)), que va en el prompt de sistema. La respuesta se valida contra él; si no es JSON válido o le falta algo, se le pide otra vez al mismo modelo con el error y, si vuelve a fallar, pasa al siguiente.
+
+**Límites para proteger la suscripción.** Una ejecución hace entre ~5 y ~32 llamadas. Máximo 5 tareas por ejecución y 3 intentos por tarea, `MAX_RUNS_PER_HOUR` ejecuciones en la última hora entre todos los usuarios (3 por defecto) y `MAX_RUNS_PER_DAY` por usuario cada 24 h (10 por defecto). Al llegar al límite por hora, el formulario dice a qué hora (de Madrid) queda libre el siguiente hueco.
+
+**Tiempos.** Cada intento tiene como mucho 180 s y la llamada entera, respaldos incluidos, 240 s.
 
 ### Prueba de extremo a extremo sin Supabase
 
@@ -99,7 +100,7 @@ npx tsx scripts/run-local.ts                                   # «Añade una p�
 npx tsx scripts/run-local.ts "Añade un modo oscuro" --out /tmp/web
 ```
 
-Ejecuta el motor completo con el repositorio en memoria y el proveedor de `LLM_PROVIDER` (las cadenas reales por defecto; con `LLM_PROVIDER=mock` no gasta cuota). Imprime cada petición a la API (`proveedor/modelo`, código y tiempo), los eventos y el estado de las tareas hasta `done` o `failed`, y con `--out` guarda la web resultante y los eventos. Si la API pide esperar más de 5 min (cuota diaria agotada) o se pulsa Ctrl+C, se detiene y guarda lo hecho hasta ese momento.
+Ejecuta el motor completo con el repositorio en memoria y el proveedor de `LLM_PROVIDER` (Claude por defecto; con `LLM_PROVIDER=mock` no gasta la suscripción). Imprime cada llamada a Claude (modelo, tiempo y tokens), los eventos y el estado de las tareas hasta `done` o `failed`, y con `--out` guarda la web resultante y los eventos. Si hay que esperar más de 5 min por el límite de uso o se pulsa Ctrl+C, se detiene y guarda lo hecho hasta ese momento.
 
 ### Estructura
 
@@ -113,13 +114,14 @@ app/
   actions.ts                 login, logout y crear ejecución
 lib/
   engine/                    máquina de estados, aplicación de cambios y comprobaciones (lógica pura)
-  llm/                       cadenas de modelos (chain), Groq/Mistral (openai-compatible), Gemini, esquemas y mock
+  llm/                       Claude (SDK y CLI comprimido para Vercel), modelos por agente, esquemas y mock
   supabase/                  clientes (usuario, navegador, servicio) y repositorio
   template.ts                web de partida
 proxy.ts                     refresca la sesión y exige login
 supabase/migrations/         esquema SQL
 scripts/create-test-user.ts  crea el usuario de prueba
-scripts/check-llm.ts         prueba cada modelo de las cadenas de los agentes
+scripts/check-claude.ts      comprueba la suscripción y cada modelo de los agentes
+scripts/pack-claude-cli.mjs  comprime el CLI de Linux para la función de Vercel (en el build)
 scripts/run-local.ts         ejecución completa en local, sin Supabase
 tests/                       Vitest
 ```
@@ -147,7 +149,7 @@ cp .env.example .env.local      # y rellena los valores
 npm run dev                     # http://localhost:3000
 ```
 
-Para probar sin claves de IA, pon `LLM_PROVIDER=mock` en `.env.local`. Con una sola clave (p. ej. solo `GEMINI_API_KEY`) también funciona: cada agente usa los eslabones de su cadena que tengan clave.
+Con la sesión de Claude Code iniciada en el equipo no hace falta token. Para probar sin gastar la suscripción, pon `LLM_PROVIDER=mock` en `.env.local`.
 
 Antes del primer arranque hay que preparar Supabase (abajo) y crear un usuario:
 
@@ -164,13 +166,11 @@ El script lee `NEXT_PUBLIC_SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` de `.env.
 | `NEXT_PUBLIC_SUPABASE_URL` | Navegador y servidor |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clave pública (anon o publishable). Navegador y servidor |
 | `SUPABASE_SERVICE_ROLE_KEY` | Solo servidor: escrituras del motor y vista previa |
-| `GROQ_API_KEY` | Solo servidor. [console.groq.com/keys](https://console.groq.com/keys), plan gratuito |
-| `MISTRAL_API_KEY` | Solo servidor. [console.mistral.ai](https://console.mistral.ai) → API Keys, plan gratuito (Experiment) |
-| `GEMINI_API_KEY` | Solo servidor. [aistudio.google.com/apikey](https://aistudio.google.com/apikey), plan gratuito |
-| `LLM_CHAIN_ORCHESTRATOR`, `LLM_CHAIN_DEVELOP`, `LLM_CHAIN_TESTING` | Opcionales: cadena de modelos de cada agente (ver «Modelos de cada agente») |
-| `LLM_PROVIDER` | `real` (por defecto) o `mock` |
-| `MAX_RUNS_PER_DAY` | Ejecuciones por usuario cada 24 h, por defecto 15 |
-| `MAX_RUNS_PER_HOUR` | Ejecuciones de todos los usuarios juntos en la última hora, por defecto 4 |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Solo servidor. Token de la suscripción de Claude (`claude setup-token`). Obligatorio en Vercel |
+| `CLAUDE_MODELS_ORCHESTRATOR`, `CLAUDE_MODELS_DEVELOP`, `CLAUDE_MODELS_TESTING` | Opcionales: modelos de cada agente (ver «Modelos: por qué la suscripción de Claude») |
+| `LLM_PROVIDER` | `claude` (por defecto) o `mock` |
+| `MAX_RUNS_PER_HOUR` | Ejecuciones de todos los usuarios juntos en la última hora, por defecto 3 |
+| `MAX_RUNS_PER_DAY` | Ejecuciones por usuario cada 24 h, por defecto 10 |
 | `MOCK_DELAY_MS` | Opcional, retardo simulado del modo mock (por defecto 1500 ms) |
 
 ## Despliegue
@@ -186,8 +186,21 @@ El script lee `NEXT_PUBLIC_SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` de `.env.
 ### Vercel
 
 1. Importa el repositorio en [vercel.com](https://vercel.com) (plan Hobby). No hace falta configurar nada del build.
-2. En **Settings → Environment Variables** añade las variables de la tabla anterior.
+2. En **Settings → Environment Variables** añade las variables de la tabla anterior (al menos las de Supabase y `CLAUDE_CODE_OAUTH_TOKEN`).
 3. Despliega y crea el usuario de prueba con el script.
+
+#### El CLI de Claude en una función de Vercel
+
+El SDK necesita el binario del CLI de Claude Code. El de Linux x64 (glibc) ocupa ~381 MB y una función de Vercel admite 250 MB sin comprimir, así que no cabe tal cual:
+
+- En el build (`npm run build` → [`scripts/pack-claude-cli.mjs`](scripts/pack-claude-cli.mjs), solo cuando `VERCEL=1`) se toma el binario del paquete `@anthropic-ai/claude-agent-sdk-linux-x64` de la misma versión que el SDK, se comprueba su sha256 con el manifiesto del SDK y se comprime con brotli (calidad 9): ~137 MB en `.claude-cli/` (no va a git).
+- `next.config.ts` incluye ese archivo solo en la función del paso (`outputFileTracingIncludes`) y excluye los paquetes nativos del SDK de todas las funciones. El SDK va como paquete externo (`serverExternalPackages`). Medido con el trazado de `next build` (`route.js.nft.json`), la función del paso suma ~150 MB, de los que 144 MB son el CLI comprimido.
+- En el arranque en frío, [`lib/llm/claude-cli.ts`](lib/llm/claude-cli.ts) lo descomprime en `/tmp` (unos segundos, una vez por instancia y con un bloqueo para no hacerlo dos veces; se escribe en un archivo temporal y se renombra) y se le pasa al SDK con `pathToClaudeCodeExecutable`.
+- En local (macOS) no se descomprime nada: el SDK usa el binario de su paquete para la plataforma.
+
+Para probar el empaquetado en local: `npm run pack-claude-cli` y después `npm run build`.
+
+**Alternativa no implementada:** la variable de entorno `VERCEL_SUPPORT_LARGE_FUNCTIONS` de Vercel admite funciones más grandes, lo que permitiría incluir el binario sin comprimir y ahorrar la descompresión del arranque en frío. No se ha usado porque con la compresión basta el límite estándar.
 
 ## Tests
 
@@ -197,15 +210,16 @@ npm run lint
 npm run build
 ```
 
-Los tests cubren la lógica pura con el proveedor mock y un repositorio en memoria (detrás de la misma interfaz que el de Supabase): transiciones de la máquina de estados, aplicación de cambios a los archivos, comprobaciones automáticas de Testing, el bucle fallo → reintento → bloqueo, los límites por usuario y global por hora, el bloqueo entre pasos simultáneos (incluida la relectura del run tras bloquearlo), los pasos cortados a mitad y los errores repetidos. De los modelos: el parseo de las cadenas, los eslabones sin clave, el respaldo entre proveedores (503, 504, 404, 413, 429, 400, «no disponible en tu plan», sin conexión, corte por tiempo y JSON inválido o con forma incorrecta), el cuerpo de la petición a Groq y Mistral con `fetch` simulado, los errores del SDK de Gemini, los esquemas y el formato de las esperas largas. No hacen llamadas reales.
+Los tests cubren la lógica pura con el proveedor mock y un repositorio en memoria (detrás de la misma interfaz que el de Supabase): transiciones de la máquina de estados, aplicación de cambios a los archivos, comprobaciones automáticas de Testing, el bucle fallo → reintento → bloqueo, los límites por usuario y global por hora (y sus valores por defecto), el bloqueo entre pasos simultáneos (incluida la relectura del run tras bloquearlo), los pasos cortados a mitad, los errores repetidos y los fatales. Del proveedor de Claude, con un `query` simulado: el entorno limpio del subproceso, el corte si la credencial no es la suscripción o hay herramientas, el mapeo de errores (límite de uso, uso extra, saturación, modelo inexistente, sin sesión, facturación, tiempo agotado), el reintento por JSON no válido, el respaldo Opus → Sonnet y la descompresión del CLI. No hacen llamadas reales.
 
 ## Límites conocidos
 
-- **Cuotas gratuitas de los proveedores:** pocas peticiones o tokens por minuto y por día, por modelo. Una ejecución hace entre ~5 y ~32 llamadas. Para protegerlas: máximo 5 tareas por ejecución, 3 intentos por tarea, `MAX_RUNS_PER_DAY` ejecuciones por usuario cada 24 h y `MAX_RUNS_PER_HOUR` ejecuciones en la última hora entre todos los usuarios (las cuotas son de las claves, no de cada usuario). Al llegar al límite por hora, el formulario dice a qué hora (de Madrid) queda libre el siguiente hueco. Si se agota la cuota diaria, la ejecución queda esperando y reintentando mientras la página esté abierta.
+- **Límite de uso de la suscripción:** las ejecuciones de todos los usuarios gastan la misma suscripción. Los límites por hora y por usuario lo protegen; si aun así se llega al límite de uso, la ejecución queda esperando y reintentando mientras la página esté abierta.
+- **Arranque en frío:** la primera llamada de cada instancia de Vercel descomprime el CLI (unos segundos) y cada llamada arranca un proceso del CLI (unos segundos más que una llamada HTTP directa).
 - **El motor avanza mientras la página está abierta.** Si se cierra, la ejecución se queda en su estado y continúa al volver a abrirla. Para que avanzara sola haría falta una cola o un cron (fuera del plan gratuito y del alcance de la prueba).
 - **Develop devuelve archivos completos**, no diffs. Es lo más fiable con webs pequeñas como esta; con archivos grandes habría que pasar a parches.
 - **Las comprobaciones automáticas son heurísticas** (sin navegador real): detectan HTML roto, enlaces rotos y errores de sintaxis, pero no errores en tiempo de ejecución ni problemas visuales. Esa parte la cubre la revisión con IA, que puede equivocarse.
-- **Cada paso tiene hasta 300 s.** La llamada al LLM se corta a los 240 s y cuenta como error reintentable; el bloqueo del run caduca a los 320 s por si un paso se queda colgado.
+- **Cada paso tiene hasta 300 s.** La llamada al LLM se corta a los 240 s y se reintenta; el bloqueo del run caduca a los 320 s por si un paso se queda colgado.
 - Los formularios de la web de demo no envían nada: la vista previa responde con un aviso.
 
 ## Cómo se ha programado con Claude Code

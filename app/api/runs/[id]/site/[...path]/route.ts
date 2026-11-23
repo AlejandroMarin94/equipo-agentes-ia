@@ -6,11 +6,15 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /**
  * La web generada se sirve aislada: el id del run (UUID) hace de enlace
  * secreto y la cabecera CSP sandbox le da un origen opaco, así su JavaScript
- * no puede leer la sesión ni llamar a la API de la aplicación.
+ * no puede leer la sesión ni llamar a la API de la aplicación. Solo la propia app puede
+ * mostrarla en un iframe (frame-ancestors 'self'); las cabeceras globales de next.config.ts
+ * no se aplican a esta ruta.
  */
 const SANDBOX_HEADERS = {
-  "Content-Security-Policy": "sandbox allow-scripts allow-forms allow-modals",
+  "Content-Security-Policy": "sandbox allow-scripts allow-forms allow-modals; frame-ancestors 'self'",
+  "Referrer-Policy": "no-referrer",
   "X-Content-Type-Options": "nosniff",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
   "Cache-Control": "no-store",
 };
 

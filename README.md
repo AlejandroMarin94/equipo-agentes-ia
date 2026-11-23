@@ -40,7 +40,7 @@ flowchart TD
 
 ### Un paso por petición (límite de Vercel)
 
-En Vercel Hobby ninguna función puede durar más de 60 s, y una ejecución completa encadena hasta ~30 llamadas al LLM. Por eso el motor es una **máquina de estados que avanza un solo paso por llamada** (`POST /api/runs/[id]/step`, `maxDuration = 60`): cada paso hace como mucho una llamada al LLM, guarda el resultado en la base de datos y devuelve el estado. La página de la ejecución llama a `step` en bucle mientras la ejecución no haya terminado.
+En Vercel Hobby ninguna función puede durar más de 300 s (con Fluid Compute), y una ejecución completa encadena hasta ~30 llamadas al LLM. Por eso el motor es una **máquina de estados que avanza un solo paso por llamada** (`POST /api/runs/[id]/step`, `maxDuration = 300`): cada paso hace como mucho una llamada al LLM, guarda el resultado en la base de datos y devuelve el estado. La página de la ejecución llama a `step` en bucle mientras la ejecución no haya terminado.
 
 - **Bloqueo:** antes de avanzar, el paso hace un `update` condicional sobre `runs.locked_until` (solo gana quien lo encuentra vacío o caducado). Si hay dos pestañas abiertas, la segunda recibe `busy` y espera; nunca se ejecutan dos pasos del mismo run a la vez.
 - **Límite de la API (429) o modelo saturado (503):** el run no falla. Se registra el evento «límite de la API, reintento en X s», el paso responde `retryAfter`, el bloqueo se alarga hasta esa hora y el navegador espera y reintenta.
@@ -180,7 +180,7 @@ Los tests cubren la lógica pura con el proveedor mock y un repositorio en memor
 - **El motor avanza mientras la página está abierta.** Si se cierra, la ejecución se queda en su estado y continúa al volver a abrirla. Para que avanzara sola haría falta una cola o un cron (fuera del plan gratuito y del alcance de la prueba).
 - **Develop devuelve archivos completos**, no diffs. Es lo más fiable con webs pequeñas como esta; con archivos grandes habría que pasar a parches.
 - **Las comprobaciones automáticas son heurísticas** (sin navegador real): detectan HTML roto, enlaces rotos y errores de sintaxis, pero no errores en tiempo de ejecución ni problemas visuales. Esa parte la cubre la revisión con IA, que puede equivocarse.
-- **Cada paso tiene hasta 60 s.** La llamada al LLM se corta a los 50 s y cuenta como error reintentable.
+- **Cada paso tiene hasta 300 s.** La llamada al LLM se corta a los 240 s y cuenta como error reintentable; el bloqueo del run caduca a los 320 s por si un paso se queda colgado.
 - Los formularios de la web de demo no envían nada: la vista previa responde con un aviso.
 
 ## Cómo se ha programado con Claude Code

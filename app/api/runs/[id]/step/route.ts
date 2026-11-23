@@ -4,8 +4,8 @@ import { getProvider } from "@/lib/llm";
 import { SupabaseRepository } from "@/lib/supabase/repository";
 import { getUser } from "@/lib/supabase/server";
 
-// Un paso = como mucho una llamada al LLM; cabe en el límite de Vercel Hobby.
-export const maxDuration = 60;
+// Un paso = como mucho una llamada al LLM; 300 s es el máximo de Vercel Hobby con Fluid Compute.
+export const maxDuration = 300;
 
 export async function POST(_request: Request, ctx: RouteContext<"/api/runs/[id]/step">) {
   const { id } = await ctx.params;

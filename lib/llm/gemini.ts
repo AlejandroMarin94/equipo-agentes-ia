@@ -10,7 +10,8 @@ import {
   type TaskInput,
 } from "./types";
 
-const REQUEST_TIMEOUT_MS = 50_000;
+// Por debajo de maxDuration (300 s) para que el paso tenga margen de guardar el error.
+const REQUEST_TIMEOUT_MS = 240_000;
 const DEFAULT_RETRY_SECONDS = 30;
 const OVERLOADED_RETRY_SECONDS = 15;
 

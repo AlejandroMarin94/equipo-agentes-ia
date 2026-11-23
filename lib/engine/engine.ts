@@ -104,7 +104,7 @@ export async function startRun(
 
 /**
  * Avanza el run UN paso (como mucho una llamada al LLM), para que cada
- * petición HTTP quepa en el límite de 60 s de Vercel Hobby.
+ * petición HTTP quepa en el límite de 300 s de Vercel Hobby.
  */
 export async function step(
   repo: Repository,

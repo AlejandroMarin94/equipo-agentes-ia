@@ -4,8 +4,8 @@ export const LIMITS = {
   maxAttempts: 3,
   maxConsecutiveErrors: 3,
   maxCriteria: 6,
-  /** Algo más que maxDuration (60 s) para que un paso colgado no deje el run bloqueado para siempre. */
-  lockMs: 70_000,
+  /** Algo más que maxDuration (300 s) para que un paso colgado no deje el run bloqueado para siempre. */
+  lockMs: 320_000,
   errorRetrySeconds: 3,
   busyRetrySeconds: 2,
   requestMinLength: 5,

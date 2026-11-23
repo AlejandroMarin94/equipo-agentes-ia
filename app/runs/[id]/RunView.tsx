@@ -20,7 +20,6 @@ interface Props {
 }
 
 interface StepResponse {
-  status?: Run["status"];
   done?: boolean;
   busy?: boolean;
   retryAfter?: number;
@@ -205,7 +204,10 @@ export function RunView({ initialRun, initialTasks, initialEvents, initialFiles 
               run.status === "done" ? "border-emerald-200 bg-emerald-50" : "border-red-200 bg-red-50"
             }`}
           >
-            <p className="mb-1 font-semibold">Resumen del Orquestador</p>
+            <p className="mb-1 font-semibold">
+              {/* Si el run se detuvo por un error, el texto lo escribe el sistema, no el Orquestador. */}
+              {events.some((e) => e.kind === "summary") ? "Resumen del Orquestador" : "Ejecución detenida"}
+            </p>
             <p className="whitespace-pre-line">{run.summary}</p>
           </div>
         )}

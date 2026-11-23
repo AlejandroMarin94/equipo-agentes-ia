@@ -6,7 +6,8 @@ export const RUN_STATUS: Record<RunStatus, { label: string; className: string }>
   testing: { label: "Probando", className: "bg-amber-100 text-amber-800" },
   summarizing: { label: "Resumiendo", className: "bg-violet-100 text-violet-800" },
   done: { label: "Terminada", className: "bg-emerald-100 text-emerald-800" },
-  failed: { label: "Terminada con fallos", className: "bg-red-100 text-red-800" },
+  // Tareas bloqueadas o ejecución detenida por un error.
+  failed: { label: "No completada", className: "bg-red-100 text-red-800" },
 };
 
 export const TASK_COLUMNS: { status: TaskStatus; label: string; className: string }[] = [

@@ -120,6 +120,17 @@ describe("máquina de estados con el proveedor mock", () => {
     await step(repo, provider, runId);
     expect(await repo.listTasks(runId)).toHaveLength(LIMITS.maxTasks);
   });
+
+  it("da un criterio por defecto a las tareas que llegan sin criterios", async () => {
+    const repo = new MemoryRepository();
+    const runId = await newRun(repo, "Añade un modo oscuro");
+    const provider = providerWith({
+      plan: async () => [{ title: "Hacer algo", description: "", acceptance_criteria: [] }],
+    });
+    await step(repo, provider, runId);
+    const [task] = await repo.listTasks(runId);
+    expect(task.acceptance_criteria).toEqual(["La tarea «Hacer algo» está implementada en la web"]);
+  });
 });
 
 describe("bucle fallo → reintento → bloqueo", () => {

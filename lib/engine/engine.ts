@@ -174,14 +174,19 @@ async function planStep(repo: Repository, provider: AgentProvider, run: Run) {
   const tasks = planned
     .filter((t) => t && typeof t.title === "string" && t.title.trim())
     .slice(0, LIMITS.maxTasks)
-    .map((t, position) => ({
-      position,
-      title: t.title.trim(),
-      description: (t.description ?? "").trim(),
-      acceptance_criteria: (t.acceptance_criteria ?? [])
+    .map((t, position) => {
+      const title = t.title.trim();
+      const criteria = (Array.isArray(t.acceptance_criteria) ? t.acceptance_criteria : [])
         .filter((c) => typeof c === "string" && c.trim())
-        .slice(0, LIMITS.maxCriteria),
-    }));
+        .slice(0, LIMITS.maxCriteria);
+      return {
+        position,
+        title,
+        description: (t.description ?? "").trim(),
+        // Sin criterios, Testing no podría aprobarla nunca (exige al menos un resultado).
+        acceptance_criteria: criteria.length > 0 ? criteria : [`La tarea «${title}» está implementada en la web`],
+      };
+    });
   if (tasks.length === 0) throw new Error("El Orquestador no ha devuelto ninguna tarea válida");
 
   await repo.insertTasks(run.id, tasks);

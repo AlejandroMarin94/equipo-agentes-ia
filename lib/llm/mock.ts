@@ -229,13 +229,19 @@ body.oscuro {
             path: "script.js",
             action: "update",
             content: `${js}
+function leerModo() {
+  try { return localStorage.getItem("modo"); } catch (e) { return null; }
+}
+function guardarModo(modo) {
+  try { localStorage.setItem("modo", modo); } catch (e) { /* almacenamiento no disponible */ }
+}
 document.addEventListener("DOMContentLoaded", function () {
   var boton = document.getElementById("modo-oscuro");
-  if (localStorage.getItem("modo") === "oscuro") document.body.classList.add("oscuro");
+  if (leerModo() === "oscuro") document.body.classList.add("oscuro");
   if (!boton) return;
   boton.addEventListener("click", function () {
     var activo = document.body.classList.toggle("oscuro");
-    localStorage.setItem("modo", activo ? "oscuro" : "claro");
+    guardarModo(activo ? "oscuro" : "claro");
   });
 });
 `,
@@ -295,7 +301,7 @@ export class MockProvider implements AgentProvider {
     if (this.delayMs > 0) await new Promise((r) => setTimeout(r, this.delayMs));
   }
 
-  async plan({ request }: { request: string }): Promise<PlannedTask[]> {
+  async plan({ request }: Parameters<AgentProvider["plan"]>[0]): Promise<PlannedTask[]> {
     await this.wait();
     return recipeFor(request).tasks.map(({ title, description, acceptance_criteria }) => ({
       title,
@@ -304,7 +310,7 @@ export class MockProvider implements AgentProvider {
     }));
   }
 
-  async develop({ request, task, files }: { request: string; task: TaskInput; files: SiteFiles }): Promise<DevelopOutput> {
+  async develop({ request, task, files }: Parameters<AgentProvider["develop"]>[0]): Promise<DevelopOutput> {
     await this.wait();
     const recipeTask = recipeFor(request).tasks[task.position];
     if (!recipeTask) return { summary: "No he encontrado nada que cambiar para esta tarea.", changes: [] };
@@ -316,7 +322,7 @@ export class MockProvider implements AgentProvider {
     return { summary, changes };
   }
 
-  async review({ request, task }: { request: string; task: TaskInput; files: SiteFiles }): Promise<ReviewOutput> {
+  async review({ request, task }: Parameters<AgentProvider["review"]>[0]): Promise<ReviewOutput> {
     await this.wait();
     const recipeTask = recipeFor(request).tasks[task.position];
     const flaw = recipeTask?.flaw && isFirstTry(task) ? recipeTask.flaw : null;
@@ -328,7 +334,7 @@ export class MockProvider implements AgentProvider {
     return { passed: results.every((r) => r.ok), results };
   }
 
-  async summarize({ tasks }: { request: string; tasks: { title: string; status: string; last_feedback: string | null }[] }): Promise<string> {
+  async summarize({ tasks }: Parameters<AgentProvider["summarize"]>[0]): Promise<string> {
     await this.wait();
     const done = tasks.filter((t) => t.status === "done");
     const blocked = tasks.filter((t) => t.status === "blocked");

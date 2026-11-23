@@ -5,19 +5,9 @@ import { TERMINAL_STATUSES } from "../types";
 import { runDeterministicChecks } from "./checks";
 import { applyChanges } from "./files";
 import type { Repository } from "./repository";
+import { LIMITS } from "../limits";
 
-export const LIMITS = {
-  maxTasks: 5,
-  maxAttempts: 3,
-  maxConsecutiveErrors: 3,
-  maxCriteria: 6,
-  /** Algo más que maxDuration (60 s) para que un paso colgado no deje el run bloqueado para siempre. */
-  lockMs: 70_000,
-  errorRetrySeconds: 3,
-  busyRetrySeconds: 2,
-  requestMinLength: 5,
-  requestMaxLength: 500,
-};
+export { LIMITS };
 
 export interface StepResult {
   status: RunStatus;

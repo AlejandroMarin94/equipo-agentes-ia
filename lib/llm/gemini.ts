@@ -15,7 +15,8 @@ const DEFAULT_RETRY_SECONDS = 30;
 
 const COMMON_RULES = `Trabajáis sobre una web estática pequeña (HTML, CSS y JS sin build) de un negocio ficticio.
 Reglas de la web: rutas siempre relativas (nada que empiece por "/"), sin dependencias externas ni CDNs,
-todas las páginas comparten cabecera, menú y pie, y todo el texto visible está en español.`;
+todas las páginas comparten cabecera, menú y pie, y todo el texto visible está en español.
+La web se previsualiza en un iframe aislado: si usas localStorage, envuélvelo en try/catch.`;
 
 const planSchema: Schema = {
   type: Type.OBJECT,

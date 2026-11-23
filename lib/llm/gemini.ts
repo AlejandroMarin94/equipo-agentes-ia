@@ -1,5 +1,5 @@
 import { ApiError, GoogleGenAI } from "@google/genai";
-import { DEFAULT_RETRY_SECONDS, REQUEST_TIMEOUT_MS, errorFromStatus, type LinkCaller } from "./chain";
+import { DEFAULT_RETRY_SECONDS, LinkError, REQUEST_TIMEOUT_MS, errorFromStatus, type LinkCaller } from "./chain";
 import { toGeminiSchema } from "./schemas";
 
 /** Extrae el retraso sugerido por la API de Gemini ("retryDelay": "37s") o usa uno por defecto. */
@@ -40,8 +40,9 @@ export function createGeminiCaller(apiKey: string, generate?: GenerateContent): 
     } catch (error) {
       if (error instanceof ApiError) {
         const retryAfter = error.status === 429 ? parseRetryDelay(error.message) : undefined;
-        throw errorFromStatus(error.status, `gemini ${error.status}: ${error.message.slice(0, 500)}`, retryAfter) ?? error;
+        throw errorFromStatus(error.status, `gemini ${error.status}: ${error.message.slice(0, 500)}`, retryAfter);
       }
+      if (error instanceof TypeError) throw new LinkError("network", `gemini: ${error.message}`);
       throw error;
     }
   };

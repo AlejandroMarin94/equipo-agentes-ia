@@ -163,10 +163,20 @@ describe("bucle de respaldo entre proveedores", () => {
     expect((error as Error).message).toContain("groq/a (413), gemini/b (404, no disponible), mistral/c (JSON no válido)");
   });
 
-  it("un error que otro modelo no arregla (400 de petición mal formada) se lanza sin seguir", async () => {
+  it("un 400 propio de un modelo pasa al siguiente; sin conexión cuenta como pasajero", async () => {
+    const caller = fakeCaller({ "groq/a": new LinkError("rejected", "x", 400), "mistral/b": new LinkError("network", "fetch failed"), "gemini/c": ok });
+    const out = await callChain(chainOf("groq/a", "mistral/b", "gemini/c"), { groq: caller, mistral: caller, gemini: caller }, request);
+    expect(out.fallbackFrom).toEqual(["groq/a (400, petición rechazada)", "mistral/b (sin conexión)"]);
+
+    const down = fakeCaller({ "groq/a": new LinkError("network", "fetch failed") });
+    const error = await callChain(chainOf("groq/a"), { groq: down }, request).catch((e: unknown) => e);
+    expect(error).toMatchObject({ overloaded: true, retryAfterSeconds: 15 });
+  });
+
+  it("un error que no es de la API (fallo de programación) se lanza sin probar el resto", async () => {
     const calls: string[] = [];
-    const caller = fakeCaller({ "groq/a": new Error("groq 400: bad request"), "gemini/b": ok }, calls);
-    await expect(callChain(chainOf("groq/a", "gemini/b"), { groq: caller, gemini: caller }, request)).rejects.toThrow("bad request");
+    const caller = fakeCaller({ "groq/a": new Error("bug"), "gemini/b": ok }, calls);
+    await expect(callChain(chainOf("groq/a", "gemini/b"), { groq: caller, gemini: caller }, request)).rejects.toThrow("bug");
     expect(calls).toEqual(["groq/a"]);
   });
 });
@@ -268,8 +278,12 @@ describe("proveedor compatible con OpenAI", () => {
     expect(await failure(429, "rate limit", { "retry-after": "42" })).toMatchObject({ kind: "quota", retryAfterSeconds: 42 });
     expect(await failure(429, "rate limit")).toMatchObject({ kind: "quota", retryAfterSeconds: 30 });
     const bad = await failure(400, "bad request");
-    expect(bad).not.toBeInstanceOf(LinkError);
-    expect(String(bad)).not.toContain("clave-secreta");
+    expect(bad).toMatchObject({ kind: "rejected", status: 400 });
+    expect((bad as LinkError).message).not.toContain("clave-secreta");
+    const offline = await createOpenAICompatibleCaller("groq", "k", (async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch)(link("groq/m"), full).catch((e: unknown) => e);
+    expect(offline).toMatchObject({ kind: "network" });
   });
 
   it("respuesta cortada por max_tokens o sin contenido: JSON no válido", async () => {
@@ -297,7 +311,7 @@ describe("Gemini como eslabón", () => {
     expect(await geminiFailure(new ApiError({ message: body429, status: 429 }))).toMatchObject({ kind: "quota", retryAfterSeconds: 37 });
     expect(await geminiFailure(new ApiError({ message: "overloaded", status: 503 }))).toMatchObject({ kind: "overloaded" });
     expect(await geminiFailure(new ApiError({ message: "no longer available", status: 404 }))).toMatchObject({ kind: "unavailable" });
-    expect(await geminiFailure(new ApiError({ message: "bad", status: 400 }))).toBeInstanceOf(ApiError);
+    expect(await geminiFailure(new ApiError({ message: "bad", status: 400 }))).toMatchObject({ kind: "rejected" });
   });
 
   it("manda el esquema convertido y devuelve el texto", async () => {

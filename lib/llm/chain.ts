@@ -41,10 +41,21 @@ export type LinkCaller = (link: ChainLink, request: LlmRequest) => Promise<strin
 
 /**
  * Fallo de un modelo que hace pasar al siguiente de la cadena.
- * overloaded y timeout son pasajeros (se reintenta pronto); quota espera lo que diga la API;
- * el resto (unavailable, too_large, invalid_output, auth) son propios del modelo o de la petición.
+ * overloaded, timeout y network son pasajeros (se reintenta pronto); quota espera lo que diga la API;
+ * el resto (unavailable, too_large, invalid_output, auth, rejected) son propios del modelo o de la petición.
  */
-export type FailureKind = "overloaded" | "timeout" | "quota" | "unavailable" | "too_large" | "invalid_output" | "auth";
+export type FailureKind =
+  | "overloaded"
+  | "timeout"
+  | "network"
+  | "quota"
+  | "unavailable"
+  | "too_large"
+  | "invalid_output"
+  | "auth"
+  | "rejected";
+
+const TRANSIENT_KINDS: FailureKind[] = ["overloaded", "timeout", "network"];
 
 export class LinkError extends Error {
   constructor(
@@ -61,30 +72,33 @@ export class LinkError extends Error {
 const UNAVAILABLE_PATTERN = /subscription tier|not available|no longer available|does not exist|model_not_found|invalid model|unknown model/i;
 
 /**
- * Traduce un código HTTP a un fallo de la cadena, o null si es un error que no se arregla con otro
- * modelo (p. ej. un 400 por una petición mal formada), que se lanza tal cual.
+ * Traduce un código HTTP de error a un fallo de la cadena. Cualquier error HTTP pasa al siguiente modelo:
+ * un 400 puede ser propio de un modelo (un parámetro que no admite) y, si es de la petición, fallarán
+ * todos y el error del paso dirá por qué.
  */
-export function errorFromStatus(status: number, message: string, retryAfterSeconds?: number): LinkError | null {
+export function errorFromStatus(status: number, message: string, retryAfterSeconds?: number): LinkError {
   if (status === 429) return new LinkError("quota", message, status, retryAfterSeconds);
-  if (status === 503 || status === 502 || status === 500) return new LinkError("overloaded", message, status);
   if (status === 504) return new LinkError("timeout", message, status);
+  if (status >= 500) return new LinkError("overloaded", message, status);
   if (status === 413) return new LinkError("too_large", message, status);
   if (status === 404) return new LinkError("unavailable", message, status);
   // «not available in your subscription tier» (Mistral) puede llegar como 400, 401 o 403.
   if (UNAVAILABLE_PATTERN.test(message)) return new LinkError("unavailable", message, status);
   // Clave rechazada: el resto de proveedores tienen la suya.
   if (status === 401 || status === 403) return new LinkError("auth", message, status);
-  return null;
+  return new LinkError("rejected", message, status);
 }
 
 const FAILURE_LABEL: Record<FailureKind, (e: LinkError) => string> = {
   overloaded: (e) => String(e.status ?? "saturado"),
   timeout: (e) => (e.status ? String(e.status) : "tiempo agotado"),
+  network: () => "sin conexión",
   quota: (e) => String(e.status ?? 429),
   unavailable: (e) => `${e.status ? `${e.status}, ` : ""}no disponible`,
   too_large: (e) => String(e.status ?? "petición demasiado grande"),
   invalid_output: () => "JSON no válido",
   auth: (e) => `${e.status}, clave rechazada`,
+  rejected: (e) => `${e.status}, petición rechazada`,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -216,7 +230,8 @@ export function parseOutput<T>(text: string, output: OutputSchema): T {
 
 /**
  * Prueba los modelos de la cadena en orden hasta que uno responda con JSON válido.
- * Si todos fallan por saturación o tiempo, RateLimitError a los 15 s (no cuenta como error del run);
+ * Un error que no sea de la API (un fallo de programación) se lanza sin probar el resto.
+ * Si todos fallan y alguno fue por saturación, tiempo o red, RateLimitError a los 15 s (no cuenta como error del run);
  * si solo hubo cuota agotada (429), la menor espera que haya pedido la API; si no, el run registra
  * el error con la lista de lo que ha fallado.
  */
@@ -249,7 +264,7 @@ export async function callChain<T>(
       }
       if (!(error instanceof LinkError)) throw error;
       failed.push(`${link.label} (${FAILURE_LABEL[error.kind](error)})`);
-      if (error.kind === "overloaded" || error.kind === "timeout") transient = true;
+      if (TRANSIENT_KINDS.includes(error.kind)) transient = true;
       if (error.kind === "quota") {
         const delay = error.retryAfterSeconds ?? DEFAULT_RETRY_SECONDS;
         quotaRetrySeconds = Math.min(quotaRetrySeconds ?? delay, delay);

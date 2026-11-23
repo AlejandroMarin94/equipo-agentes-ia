@@ -66,12 +66,19 @@ export function createOpenAICompatibleCaller(
 ): LinkCaller {
   const { baseURL } = OPENAI_COMPATIBLE[provider];
   return async (link, request) => {
-    const response = await fetchImpl(`${baseURL}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify(buildChatBody(provider, link, request)),
-      signal: AbortSignal.timeout(request.timeoutMs),
-    });
+    let response: Response;
+    try {
+      response = await fetchImpl(`${baseURL}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify(buildChatBody(provider, link, request)),
+        signal: AbortSignal.timeout(request.timeoutMs),
+      });
+    } catch (error) {
+      // fetch lanza TypeError si no hay conexión (DNS, conexión rechazada o cortada).
+      if (error instanceof TypeError) throw new LinkError("network", `${provider}: ${error.message}`);
+      throw error;
+    }
     const raw = await response.text();
     if (!response.ok) {
       const message = `${provider} ${response.status}: ${raw.slice(0, 500)}`;
@@ -81,7 +88,7 @@ export function createOpenAICompatibleCaller(
       }
       const retryAfter =
         response.status === 429 ? (parseRetryAfter(response.headers.get("retry-after")) ?? DEFAULT_RETRY_SECONDS) : undefined;
-      throw errorFromStatus(response.status, message, retryAfter) ?? new Error(message);
+      throw errorFromStatus(response.status, message, retryAfter);
     }
     let body: ChatCompletion;
     try {

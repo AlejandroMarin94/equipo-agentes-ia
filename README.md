@@ -17,7 +17,7 @@ La web sobre la que trabajan es la de un negocio ficticio, la «Panadería La Es
 
 - **Next.js 16** (App Router, TypeScript, Tailwind) desplegado en **Vercel Hobby**.
 - **Supabase** (plan gratuito): Postgres, Auth (email + contraseña) y Realtime.
-- **Google Gemini** (plan gratuito) con el SDK `@google/genai` y salida JSON estructurada (`responseMimeType: application/json` + `responseSchema`).
+- **LLM: Groq, Mistral y Google Gemini**, los tres en plan gratuito y sin tarjeta, con salida JSON estructurada. Groq y Mistral por su API compatible con OpenAI (`fetch` a `/chat/completions`, sin SDK); Gemini con el SDK `@google/genai`. Cada agente tiene su cadena de modelos (ver «Modelos de cada agente»).
 - **Vitest** para los tests de la lógica.
 
 ## Arquitectura
@@ -43,8 +43,8 @@ flowchart TD
 En Vercel Hobby ninguna función puede durar más de 300 s (con Fluid Compute), y una ejecución completa encadena hasta ~30 llamadas al LLM. Por eso el motor es una **máquina de estados que avanza un solo paso por llamada** (`POST /api/runs/[id]/step`, `maxDuration = 300`): cada paso hace como mucho una llamada al LLM, guarda el resultado en la base de datos y devuelve el estado. La página de la ejecución llama a `step` en bucle mientras la ejecución no haya terminado.
 
 - **Bloqueo:** antes de avanzar, el paso hace un `update` condicional sobre `runs.locked_until` (solo gana quien lo encuentra vacío o caducado). Si hay dos pestañas abiertas, la segunda recibe `busy` y espera; nunca se ejecutan dos pasos del mismo run a la vez.
-- **Modelo saturado (503), tiempo agotado (504), cuota de ese modelo agotada (429) o modelo no disponible (404):** se prueba el siguiente modelo de la cadena de respaldo (ver «Modelo de cada agente»). El modelo que responde queda en el evento y se ve en el registro (en ámbar si ha sido un respaldo).
-- **Todos los modelos de la cadena saturados o sin cuota:** el run no falla. Se registra el evento «límite de la API / modelo saturado, reintento en X s», el paso responde `retryAfter`, el bloqueo se alarga hasta esa hora y el navegador espera y reintenta.
+- **Un modelo falla** (saturado, sin tiempo, sin cuota, no disponible, petición demasiado grande, JSON no válido…): se prueba el siguiente de la cadena del agente, aunque sea de otro proveedor (ver «Modelos de cada agente»). El `proveedor/modelo` que responde queda en el evento y se ve en el registro (en ámbar si ha sido un respaldo, con los que fallaron al pasar el ratón).
+- **Todos los modelos de la cadena saturados o sin cuota:** el run no falla. Se registra el evento «modelos saturados, reintento en 15 s» o, si la cuota diaria está agotada, «cuota de la API agotada hasta las HH:MM; reintento en 12 h 22 min», el paso responde `retryAfter`, el bloqueo se alarga hasta esa hora y el navegador espera y reintenta.
 - **Otros errores** (respuesta no válida, tiempo agotado…): se registran y se reintenta el paso; tras 3 errores seguidos el run se marca como `failed` con el motivo.
 - **Directo:** la interfaz se suscribe con Supabase Realtime a `runs`, `tasks` y `events`. Antes de cada llamada al LLM se escribe un evento «trabajando en…», así la tarjeta del agente activo se ilumina mientras piensa. Si Realtime no conecta, la página consulta la base de datos cada 2 s.
 
@@ -57,32 +57,40 @@ Lo que falla se guarda en `tasks.last_feedback` y es lo que recibe Develop en el
 
 ### Proveedor de IA intercambiable
 
-`LLM_PROVIDER=gemini|mock`:
+`LLM_PROVIDER=real|mock`:
 
-- `gemini`: los agentes reales, cada uno con su modelo (ver abajo).
+- `real` (por defecto; `gemini`, el valor antiguo, vale igual): los agentes reales, cada uno con su cadena de modelos (ver abajo).
 - `mock`: respuestas deterministas y plausibles sin clave de API, para desarrollar, probar y enseñar el flujo. Reconoce las peticiones de ejemplo (contacto, precios, modo oscuro) y la primera tarea falla siempre la primera revisión de Testing, para que se vea el bucle fallo → corrección → aprobado.
 
-### Modelo de cada agente
+### Modelos de cada agente
 
-La cuota gratuita de Gemini va por modelo, y los agentes no gastan igual: el Orquestador hace 2 llamadas por ejecución (planificar y resumir) y Develop y Testing hacen el resto (hasta ~30). Por eso cada agente tiene su modelo:
+El plan gratuito de Gemini resultó inservible para una demo: 503 casi siempre, una cuota diaria mínima y ejecuciones de más de 10 minutos. Por eso cada agente tiene una **cadena de modelos de varios proveedores**, todos con plan gratuito y sin tarjeta. Si el primero falla, se prueba el siguiente en la misma llamada:
 
-| Agente | Variable | Por defecto |
-|---|---|---|
-| Orquestador | `GEMINI_MODEL_ORCHESTRATOR` | `gemini-3.5-flash` (Flash: mejor para planificar, menos cuota) |
-| Develop | `GEMINI_MODEL_DEVELOP` | `gemini-3.5-flash-lite` (Flash-Lite: más peticiones al día) |
-| Testing | `GEMINI_MODEL_TESTING` | `gemini-3.5-flash-lite` |
+| Agente | Principal | Respaldo, en orden | Por qué |
+|---|---|---|---|
+| Orquestador | Groq `openai/gpt-oss-120b` (`reasoning_effort: low`) | Groq `qwen/qwen3.8-27b` → Mistral `mistral-small-2603` → Gemini `gemini-3.5-flash` | 2 llamadas por ejecución con poco texto: Groq es el más rápido y cabe en su límite por petición. |
+| Develop | Mistral `mistral-large-4` | Mistral `mistral-small-2603` → Groq `openai/gpt-oss-120b` → Gemini `gemini-3.5-flash-lite` | Devuelve archivos completos (respuestas largas): Mistral admite peticiones grandes; Groq da 413 por encima de ~8 K tokens. |
+| Testing | Groq `openai/gpt-oss-120b` | Groq `qwen/qwen3.8-27b` → Groq `openai/gpt-oss-20b` → Mistral `mistral-small-2603` → Gemini `gemini-3.5-flash-lite` | Muchas llamadas con respuesta corta (un veredicto por criterio): rapidez de Groq, con varios modelos porque la cuota va por modelo. |
 
-Si falta la variable de un agente se usa `GEMINI_MODEL`, y si tampoco está, el valor por defecto. Estos valores se han comprobado con una clave nueva del plan gratuito (23/11/2026): `gemini-3.8-flash` y `gemini-3.7-flash` respondían 503 («high demand») de forma repetida, `gemini-3.6-flash` daba 503 o 504 tras esperar 90-220 s, y los 2.5 dan 404 («no longer available to new users»). `gemini-3.5-flash` y los Flash-Lite respondían con JSON estructurado (los Flash-Lite, con algún 503 inmediato). El 503 no lo provoca el JSON estructurado: el mismo modelo responde o no con y sin `responseSchema` según el momento.
+Gemini queda al final de las tres porque su plan gratuito está casi siempre saturado.
 
-**Cadena de respaldo.** En el plan gratuito los 503 son frecuentes y pasajeros, y tanto la saturación como la cuota (por minuto y por día) van por modelo. Si el modelo de un agente da 503, 504, 429 o 404, el proveedor prueba en la misma llamada los de `GEMINI_FALLBACK_MODELS` (separados por comas; vacía = sin respaldo), primero los de su misma gama (Flash-Lite para Develop y Testing, Flash para el Orquestador) para no gastar la cuota de la otra. Por defecto: `gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.5-flash, gemini-3.6-flash`. Cada modelo tiene como mucho 120 s (el SDK se lo pasa al servidor, que corta con 504) y la cadena entera, 240 s: con el plan gratuito saturado un modelo puede tardar más de 3 minutos en contestar 503, y sin ese tope no quedaría tiempo para el respaldo. Si todos fallan por saturación, el paso se reintenta a los 15 s sin contar como error; si solo hay 429, se espera el menor `retryDelay` que indique la API; si ninguno existe (todo 404), es un error de configuración.
+**Configuración.** `LLM_CHAIN_ORCHESTRATOR`, `LLM_CHAIN_DEVELOP` y `LLM_CHAIN_TESTING`, con eslabones `proveedor/modelo` separados por comas (el proveedor es lo que va antes de la primera barra: `groq/openai/gpt-oss-120b`). Proveedores: `groq`, `mistral` y `gemini`, con la clave en `GROQ_API_KEY`, `MISTRAL_API_KEY` y `GEMINI_API_KEY`. Un eslabón puede llevar opciones extra para la API tras `?` (`groq/openai/gpt-oss-120b?reasoning_effort=low`); `format=json_object` fuerza ese modo de JSON. Si una variable no está o está vacía, se usa la cadena de la tabla. **Un eslabón cuyo proveedor no tiene clave se salta** (queda en el log del servidor); si un agente se queda sin ninguno, es un error de configuración.
 
-Para comprobar la clave y los modelos (configurados y de respaldo):
+**Cuándo se pasa al siguiente modelo:** 503/500/502 (saturado), 504 o corte por tiempo, 429 (cuota de ese modelo; se lee `retry-after` o el `retryDelay` de Gemini), 404 o «not available in your subscription tier» (modelo que no existe o no entra en el plan), 413 (petición demasiado grande: el límite gratuito de Groq es de unos 8 K tokens por minuto, contando la petición, el tope de salida y los tokens de razonamiento de gpt-oss), 401/403 (clave rechazada) y JSON no válido o con la forma incorrecta (también el `json_validate_failed` de Groq y las respuestas cortadas por `max_tokens`). Otro error (p. ej. un 400 por una petición mal formada) no se arregla cambiando de modelo y se registra como error del paso.
+
+**Al final de la cadena:** si algún modelo estaba saturado o sin tiempo, el paso se reintenta a los 15 s sin contar como error; si solo hubo 429, se espera la menor espera que haya pedido la API; si todos fallaron por otra cosa, es un error del paso (tras 3 seguidos, el run falla) con la lista de lo que ha fallado. Cada modelo tiene como mucho 120 s y la cadena entera, 240 s.
+
+**JSON estructurado.** Cada agente tiene un solo esquema en JSON Schema plano ([`lib/llm/schemas.ts`](lib/llm/schemas.ts)) escrito para el modo estricto (todos los campos en `required`, `additionalProperties: false`, opcionales como `["string", "null"]`). Groq con gpt-oss y Mistral lo reciben como `response_format: json_schema` estricto; los demás modelos de Groq, como `json_object` con el esquema en el mensaje de sistema; Gemini, convertido a su `responseSchema`. La respuesta se valida contra el mismo esquema antes de dársela al motor.
+
+**Migración desde la configuración solo de Gemini.** `GEMINI_MODEL`, `GEMINI_MODEL_ORCHESTRATOR`, `GEMINI_MODEL_DEVELOP`, `GEMINI_MODEL_TESTING` y `GEMINI_FALLBACK_MODELS` ya no se leen (si están, el servidor lo avisa en el log): bórralas y, si quieres otra cadena, ponla en `LLM_CHAIN_*` con el prefijo `gemini/`. Por ejemplo, la configuración anterior de Develop equivale a `LLM_CHAIN_DEVELOP=gemini/gemini-3.5-flash-lite,gemini/gemini-3.1-flash-lite,gemini/gemini-3.5-flash`. `LLM_PROVIDER=gemini` sigue funcionando como `real`.
+
+Para comprobar las claves y cada eslabón:
 
 ```bash
-npx tsx scripts/check-gemini.ts   # lee la clave de .env.local o del entorno, sin imprimirla
+npx tsx scripts/check-llm.ts                  # las tres cadenas; o solo algunas: ... develop testing
 ```
 
-El script lista los modelos «flash» de la cuenta y hace una llamada mínima con JSON estructurado a cada uno. Un 503 suele ser saturación del momento: conviene repetir antes de descartar un modelo. Las cuotas exactas de cada modelo se ven en AI Studio.
+Lee las claves de `.env.local` o del entorno, sin imprimirlas, y hace una llamada mínima con el esquema real de cada agente a cada eslabón: `proveedor/modelo`, OK / FALLO / SIN CLAVE, código HTTP y tiempo. Un 503 o un 429 suelen ser pasajeros: conviene repetir antes de descartar un modelo.
 
 ### Prueba de extremo a extremo sin Supabase
 
@@ -91,7 +99,7 @@ npx tsx scripts/run-local.ts                                   # «Añade una p�
 npx tsx scripts/run-local.ts "Añade un modo oscuro" --out /tmp/web
 ```
 
-Ejecuta el motor completo con el repositorio en memoria y el proveedor de `LLM_PROVIDER` (Gemini real por defecto; con `LLM_PROVIDER=mock` no gasta cuota). Imprime cada petición a la API (modelo, código y tiempo), los eventos y el estado de las tareas hasta `done` o `failed`, y con `--out` guarda la web resultante y los eventos. Si la API pide esperar más de 5 min (cuota diaria agotada) o se pulsa Ctrl+C, se detiene y guarda lo hecho hasta ese momento.
+Ejecuta el motor completo con el repositorio en memoria y el proveedor de `LLM_PROVIDER` (las cadenas reales por defecto; con `LLM_PROVIDER=mock` no gasta cuota). Imprime cada petición a la API (`proveedor/modelo`, código y tiempo), los eventos y el estado de las tareas hasta `done` o `failed`, y con `--out` guarda la web resultante y los eventos. Si la API pide esperar más de 5 min (cuota diaria agotada) o se pulsa Ctrl+C, se detiene y guarda lo hecho hasta ese momento.
 
 ### Estructura
 
@@ -105,13 +113,13 @@ app/
   actions.ts                 login, logout y crear ejecución
 lib/
   engine/                    máquina de estados, aplicación de cambios y comprobaciones (lógica pura)
-  llm/                       proveedores Gemini y mock
+  llm/                       cadenas de modelos (chain), Groq/Mistral (openai-compatible), Gemini, esquemas y mock
   supabase/                  clientes (usuario, navegador, servicio) y repositorio
   template.ts                web de partida
 proxy.ts                     refresca la sesión y exige login
 supabase/migrations/         esquema SQL
 scripts/create-test-user.ts  crea el usuario de prueba
-scripts/check-gemini.ts      comprueba la clave y los modelos de Gemini
+scripts/check-llm.ts         prueba cada modelo de las cadenas de los agentes
 scripts/run-local.ts         ejecución completa en local, sin Supabase
 tests/                       Vitest
 ```
@@ -139,7 +147,7 @@ cp .env.example .env.local      # y rellena los valores
 npm run dev                     # http://localhost:3000
 ```
 
-Para probar sin clave de Gemini, pon `LLM_PROVIDER=mock` en `.env.local`.
+Para probar sin claves de IA, pon `LLM_PROVIDER=mock` en `.env.local`. Con una sola clave (p. ej. solo `GEMINI_API_KEY`) también funciona: cada agente usa los eslabones de su cadena que tengan clave.
 
 Antes del primer arranque hay que preparar Supabase (abajo) y crear un usuario:
 
@@ -156,11 +164,11 @@ El script lee `NEXT_PUBLIC_SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` de `.env.
 | `NEXT_PUBLIC_SUPABASE_URL` | Navegador y servidor |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clave pública (anon o publishable). Navegador y servidor |
 | `SUPABASE_SERVICE_ROLE_KEY` | Solo servidor: escrituras del motor y vista previa |
-| `GEMINI_API_KEY` | Solo servidor |
-| `GEMINI_MODEL_ORCHESTRATOR`, `GEMINI_MODEL_DEVELOP`, `GEMINI_MODEL_TESTING` | Opcionales: modelo de cada agente (ver «Modelo de cada agente») |
-| `GEMINI_MODEL` | Opcional: modelo común para el agente que no tenga su variable |
-| `GEMINI_FALLBACK_MODELS` | Opcional: modelos de respaldo si el del agente está saturado o no disponible (ver «Modelo de cada agente») |
-| `LLM_PROVIDER` | `gemini` (por defecto) o `mock` |
+| `GROQ_API_KEY` | Solo servidor. [console.groq.com/keys](https://console.groq.com/keys), plan gratuito |
+| `MISTRAL_API_KEY` | Solo servidor. [console.mistral.ai](https://console.mistral.ai) → API Keys, plan gratuito (Experiment) |
+| `GEMINI_API_KEY` | Solo servidor. [aistudio.google.com/apikey](https://aistudio.google.com/apikey), plan gratuito |
+| `LLM_CHAIN_ORCHESTRATOR`, `LLM_CHAIN_DEVELOP`, `LLM_CHAIN_TESTING` | Opcionales: cadena de modelos de cada agente (ver «Modelos de cada agente») |
+| `LLM_PROVIDER` | `real` (por defecto) o `mock` |
 | `MAX_RUNS_PER_DAY` | Ejecuciones por usuario cada 24 h, por defecto 15 |
 | `MAX_RUNS_PER_HOUR` | Ejecuciones de todos los usuarios juntos en la última hora, por defecto 4 |
 | `MOCK_DELAY_MS` | Opcional, retardo simulado del modo mock (por defecto 1500 ms) |
@@ -189,11 +197,11 @@ npm run lint
 npm run build
 ```
 
-Los tests cubren la lógica pura con el proveedor mock y un repositorio en memoria (detrás de la misma interfaz que el de Supabase): transiciones de la máquina de estados, aplicación de cambios a los archivos, comprobaciones automáticas de Testing, el bucle fallo → reintento → bloqueo, los límites por usuario y global por hora, el modelo de cada agente, el 429, el 503 y el 504 de Gemini, la cadena de respaldo de modelos, el bloqueo entre pasos simultáneos (incluida la relectura del run tras bloquearlo), los pasos cortados a mitad y los errores repetidos.
+Los tests cubren la lógica pura con el proveedor mock y un repositorio en memoria (detrás de la misma interfaz que el de Supabase): transiciones de la máquina de estados, aplicación de cambios a los archivos, comprobaciones automáticas de Testing, el bucle fallo → reintento → bloqueo, los límites por usuario y global por hora, el bloqueo entre pasos simultáneos (incluida la relectura del run tras bloquearlo), los pasos cortados a mitad y los errores repetidos. De los modelos: el parseo de las cadenas, los eslabones sin clave, el respaldo entre proveedores (503, 504, 404, 413, 429, «no disponible en tu plan», corte por tiempo y JSON inválido o con forma incorrecta), el cuerpo de la petición a Groq y Mistral con `fetch` simulado, los errores del SDK de Gemini, los esquemas y el formato de las esperas largas. No hacen llamadas reales.
 
 ## Límites conocidos
 
-- **Cuota gratuita de Gemini:** pocas peticiones por minuto y por día. Una ejecución hace entre ~5 y ~32 llamadas. Para protegerla: máximo 5 tareas por ejecución, 3 intentos por tarea, `MAX_RUNS_PER_DAY` ejecuciones por usuario cada 24 h y `MAX_RUNS_PER_HOUR` ejecuciones en la última hora entre todos los usuarios (la cuota es de la clave, no de cada usuario). Al llegar al límite por hora, el formulario dice a qué hora (de Madrid) queda libre el siguiente hueco. Si se agota la cuota diaria, la ejecución queda esperando y reintentando mientras la página esté abierta.
+- **Cuotas gratuitas de los proveedores:** pocas peticiones o tokens por minuto y por día, por modelo. Una ejecución hace entre ~5 y ~32 llamadas. Para protegerlas: máximo 5 tareas por ejecución, 3 intentos por tarea, `MAX_RUNS_PER_DAY` ejecuciones por usuario cada 24 h y `MAX_RUNS_PER_HOUR` ejecuciones en la última hora entre todos los usuarios (las cuotas son de las claves, no de cada usuario). Al llegar al límite por hora, el formulario dice a qué hora (de Madrid) queda libre el siguiente hueco. Si se agota la cuota diaria, la ejecución queda esperando y reintentando mientras la página esté abierta.
 - **El motor avanza mientras la página está abierta.** Si se cierra, la ejecución se queda en su estado y continúa al volver a abrirla. Para que avanzara sola haría falta una cola o un cron (fuera del plan gratuito y del alcance de la prueba).
 - **Develop devuelve archivos completos**, no diffs. Es lo más fiable con webs pequeñas como esta; con archivos grandes habría que pasar a parches.
 - **Las comprobaciones automáticas son heurísticas** (sin navegador real): detectan HTML roto, enlaces rotos y errores de sintaxis, pero no errores en tiempo de ejecución ni problemas visuales. Esa parte la cubre la revisión con IA, que puede equivocarse.

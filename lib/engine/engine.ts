@@ -83,7 +83,7 @@ export async function startRun(
       error: `Has alcanzado el límite de ${options.maxRunsPerDay} ejecuciones en 24 horas (protege la cuota gratuita de la API).`,
     };
   }
-  // Límite global: la cuota gratuita de Gemini es una sola para todos los usuarios.
+  // Límite global: las cuotas gratuitas de las claves de IA son unas para todos los usuarios.
   const lastHour = await repo.listRunCreationsSince(new Date(now.getTime() - HOUR_MS));
   const releaseAt = hourlyLimitReleaseAt(lastHour, options.maxRunsPerHour);
   if (releaseAt) {

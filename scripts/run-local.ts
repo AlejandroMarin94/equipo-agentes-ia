@@ -1,12 +1,12 @@
 /**
  * Ejecuta una petición completa con el motor real, sin Supabase ni navegador:
- * repositorio en memoria y el proveedor de LLM_PROVIDER (Gemini por defecto).
+ * repositorio en memoria y el proveedor de LLM_PROVIDER (las cadenas LLM_CHAIN_* por defecto).
  *
  *   npx tsx scripts/run-local.ts ["petición"] [--out carpeta]
  *
- * Lee la configuración de .env.local (la clave no se imprime). Imprime los eventos y el
+ * Lee la configuración de .env.local (las claves no se imprimen). Imprime los eventos y el
  * estado de las tareas hasta done/failed y, con --out, guarda ahí la web resultante.
- * Cuenta las peticiones HTTP a la API de Gemini (respaldos y reintentos incluidos).
+ * Cuenta las peticiones HTTP a Groq, Mistral y Gemini (respaldos y reintentos incluidos).
  * Se detiene (guardando lo hecho) si la API pide esperar más de 5 min o con Ctrl+C.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -15,6 +15,7 @@ import { startRun, step } from "../lib/engine/engine";
 import { formatWaitUntil } from "../lib/format";
 import { MemoryRepository } from "../lib/engine/memory-repository";
 import { getProvider } from "../lib/llm";
+import { API_KEY_ENV } from "../lib/llm/chain";
 
 try {
   process.loadEnvFile(".env.local");
@@ -31,16 +32,32 @@ const outIndex = args.indexOf("--out");
 const outDir = outIndex >= 0 ? args[outIndex + 1] : null;
 const request = args.filter((_, i) => i !== outIndex && i !== outIndex + 1)[0] ?? DEFAULT_REQUEST;
 
-const secret = process.env.GEMINI_API_KEY?.trim();
-const mask = (text: string) => (secret ? text.replaceAll(secret, "***") : text);
+const secrets = Object.values(API_KEY_ENV)
+  .map((name) => process.env[name]?.trim())
+  .filter((v): v is string => Boolean(v));
+const mask = (text: string) => secrets.reduce((acc, s) => acc.replaceAll(s, "***"), text);
 
-// Cuenta las llamadas reales a la API (el SDK usa el fetch global).
+const API_HOSTS = { "generativelanguage.googleapis.com": "gemini", "api.groq.com": "groq", "api.mistral.ai": "mistral" };
+
+/** «proveedor/modelo» de una petición a la API: Gemini lo lleva en la URL; Groq y Mistral, en el cuerpo. */
+function modelOf(url: string, init?: RequestInit): string | null {
+  const host = Object.entries(API_HOSTS).find(([h]) => url.includes(h));
+  if (!host) return null;
+  if (host[1] === "gemini") return `gemini/${url.match(/models\/([^:/?]+)/)?.[1] ?? "?"}`;
+  try {
+    return `${host[1]}/${(JSON.parse(String(init?.body)) as { model?: string }).model ?? "?"}`;
+  } catch {
+    return `${host[1]}/?`;
+  }
+}
+
+// Cuenta las llamadas reales a la API (el SDK de Gemini y el proveedor compatible con OpenAI usan el fetch global).
 const apiCalls: string[] = [];
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
   const url = String(input instanceof Request ? input.url : input);
-  if (!url.includes("generativelanguage.googleapis.com")) return originalFetch(input, init);
-  const model = url.match(/models\/([^:/?]+)/)?.[1] ?? "?";
+  const model = modelOf(url, init);
+  if (!model) return originalFetch(input, init);
   const sent = Date.now();
   try {
     const response = await originalFetch(input, init);

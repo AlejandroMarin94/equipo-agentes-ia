@@ -11,3 +11,14 @@ export const LIMITS = {
   requestMinLength: 5,
   requestMaxLength: 500,
 };
+
+const HOUR_MS = 3600 * 1000;
+
+/**
+ * Cuándo queda libre un hueco del límite global por hora: cuando la ejecución
+ * que sobra más antigua sale de la ventana. `creations` va de más antigua a más reciente.
+ */
+export function hourlyLimitReleaseAt(creations: Date[], maxRunsPerHour: number): Date | null {
+  if (creations.length < maxRunsPerHour) return null;
+  return new Date(creations[creations.length - maxRunsPerHour].getTime() + HOUR_MS);
+}

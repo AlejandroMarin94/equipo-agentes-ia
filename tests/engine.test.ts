@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { runDeterministicChecks } from "@/lib/engine/checks";
-import { LIMITS, hourlyLimitReleaseAt, startRun, step } from "@/lib/engine/engine";
+import { LIMITS, startRun, step } from "@/lib/engine/engine";
+import { hourlyLimitReleaseAt } from "@/lib/limits";
 import { MemoryRepository } from "@/lib/engine/memory-repository";
 import { MockProvider } from "@/lib/llm/mock";
 import { FatalLlmError, RateLimitError, type AgentProvider } from "@/lib/llm/types";
@@ -66,6 +67,23 @@ describe("startRun", () => {
     const oldest = new Date([...repo.runs.values()][0].created_at);
     const later = new Date(oldest.getTime() + 61 * 60 * 1000);
     expect((await startRun(repo, "eva", "petición tres", { ...limits, now: later })).ok).toBe(true);
+  });
+
+  it("N creaciones en paralelo respetan los límites (contar e insertar es atómico)", async () => {
+    const repo = new MemoryRepository();
+    const global = await Promise.all(
+      Array.from({ length: 12 }, (_, i) => startRun(repo, `u${i % 4}`, `petición ${i}`, { maxRunsPerDay: 15, maxRunsPerHour: 3 })),
+    );
+    expect(global.filter((r) => r.ok)).toHaveLength(3);
+    expect(global.filter((r) => !r.ok)).toHaveLength(9);
+    expect(repo.runs.size).toBe(3);
+
+    const daily = new MemoryRepository();
+    const sameUser = await Promise.all(
+      Array.from({ length: 12 }, (_, i) => startRun(daily, "ana", `petición ${i}`, { maxRunsPerDay: 2, maxRunsPerHour: 100 })),
+    );
+    expect(sameUser.filter((r) => r.ok)).toHaveLength(2);
+    expect(daily.runs.size).toBe(2);
   });
 
   it("límites por defecto: 3 ejecuciones por hora entre todos y 10 por usuario al día", () => {

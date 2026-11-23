@@ -1,6 +1,14 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { NewEvent, NewTask, Repository, RunPatch, TaskPatch } from "../engine/repository";
+import {
+  RunLimitError,
+  type NewEvent,
+  type NewTask,
+  type Repository,
+  type RunLimits,
+  type RunPatch,
+  type TaskPatch,
+} from "../engine/repository";
 import type { Run, SiteFiles, Task } from "../types";
 import { createAdminClient } from "./admin";
 
@@ -13,34 +21,20 @@ function check<T>(result: { data: T; error: { message: string } | null }, what: 
 export class SupabaseRepository implements Repository {
   constructor(private readonly db: SupabaseClient = createAdminClient()) {}
 
-  async createRun(userId: string, request: string) {
-    const data = check(
-      await this.db.from("runs").insert({ user_id: userId, request }).select("id").single(),
-      "crear run",
-    );
-    return (data as { id: string }).id;
-  }
-
-  async countRunsSince(userId: string, since: Date) {
-    const { count, error } = await this.db
-      .from("runs")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", userId)
-      .gte("created_at", since.toISOString());
-    if (error) throw new Error(`Error de base de datos (contar runs): ${error.message}`);
-    return count ?? 0;
-  }
-
-  async listRunCreationsSince(since: Date) {
-    const data = check(
-      await this.db
-        .from("runs")
-        .select("created_at")
-        .gte("created_at", since.toISOString())
-        .order("created_at", { ascending: true }),
-      "contar runs de la última hora",
-    ) as { created_at: string }[];
-    return data.map((r) => new Date(r.created_at));
+  async createRun(userId: string, request: string, { maxRunsPerHour, maxRunsPerDay }: RunLimits) {
+    // Función de supabase/migrations/0002_create_run_atomico.sql: cuenta e inserta en una transacción.
+    const result = await this.db.rpc("create_run", {
+      p_user_id: userId,
+      p_request: request,
+      p_max_per_hour: maxRunsPerHour,
+      p_max_per_day: maxRunsPerDay,
+    });
+    if (result.error?.message === "run_limit_day") throw new RunLimitError("day");
+    if (result.error?.message === "run_limit_hour") {
+      const releaseAt = Number(result.error.details);
+      throw new RunLimitError("hour", Number.isFinite(releaseAt) ? new Date(releaseAt) : null);
+    }
+    return (check(result, "crear run") as Run).id;
   }
 
   async getRun(runId: string) {

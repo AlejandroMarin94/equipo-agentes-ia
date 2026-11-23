@@ -4,7 +4,7 @@ import type { Agent, CheckResult, Run, RunStatus, SiteFiles, Task } from "../typ
 import { TERMINAL_STATUSES } from "../types";
 import { runDeterministicChecks } from "./checks";
 import { applyChanges } from "./files";
-import type { Repository } from "./repository";
+import { RunLimitError, type Repository } from "./repository";
 import { LIMITS } from "../limits";
 import { LONG_WAIT_SECONDS, formatMadridTime, formatWait } from "../format";
 
@@ -42,17 +42,6 @@ function toTaskInput(task: Task): TaskInput {
   };
 }
 
-const HOUR_MS = 3600 * 1000;
-
-/**
- * Cuándo queda libre un hueco del límite global por hora: cuando la ejecución
- * que sobra más antigua sale de la ventana. `creations` va de más antigua a más reciente.
- */
-export function hourlyLimitReleaseAt(creations: Date[], maxRunsPerHour: number): Date | null {
-  if (creations.length < maxRunsPerHour) return null;
-  return new Date(creations[creations.length - maxRunsPerHour].getTime() + HOUR_MS);
-}
-
 /** Qué modelo ha respondido, para el registro (payload.model y payload.fallbackFrom). */
 function modelPayload(info: ModelInfo): ModelInfo {
   if (!info.model) return {};
@@ -61,7 +50,18 @@ function modelPayload(info: ModelInfo): ModelInfo {
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 500);
 
-/** Crea un run nuevo con su copia de la web de partida. */
+function runLimitMessage(error: RunLimitError, limits: { maxRunsPerDay: number; maxRunsPerHour: number }, now: Date) {
+  if (error.limit === "day") {
+    return `Has alcanzado el límite de ${limits.maxRunsPerDay} ejecuciones en 24 horas (protege la suscripción de Claude que usan los agentes).`;
+  }
+  // Límite global: la suscripción de Claude es una para todos los usuarios.
+  const base = `Se ha alcanzado el límite de ${limits.maxRunsPerHour} ejecuciones por hora entre todos los usuarios (protege la suscripción de Claude).`;
+  if (!error.releaseAt) return `${base} Inténtalo de nuevo más tarde.`;
+  const minutes = Math.max(1, Math.ceil((error.releaseAt.getTime() - now.getTime()) / 60_000));
+  return `${base} Podrás lanzar otra a las ${formatMadridTime(error.releaseAt)} (hora de Madrid), dentro de ${minutes} min.`;
+}
+
+/** Crea un run nuevo con su copia de la web de partida, si no se supera ningún límite. */
 export async function startRun(
   repo: Repository,
   userId: string,
@@ -76,25 +76,17 @@ export async function startRun(
     };
   }
   const now = options.now ?? new Date();
-  const recent = await repo.countRunsSince(userId, new Date(now.getTime() - 24 * 3600 * 1000));
-  if (recent >= options.maxRunsPerDay) {
-    return {
-      ok: false,
-      error: `Has alcanzado el límite de ${options.maxRunsPerDay} ejecuciones en 24 horas (protege la suscripción de Claude que usan los agentes).`,
-    };
+  let runId: string;
+  try {
+    runId = await repo.createRun(userId, request, {
+      maxRunsPerDay: options.maxRunsPerDay,
+      maxRunsPerHour: options.maxRunsPerHour,
+      now,
+    });
+  } catch (error) {
+    if (!(error instanceof RunLimitError)) throw error;
+    return { ok: false, error: runLimitMessage(error, options, now) };
   }
-  // Límite global: la suscripción de Claude es una para todos los usuarios.
-  const lastHour = await repo.listRunCreationsSince(new Date(now.getTime() - HOUR_MS));
-  const releaseAt = hourlyLimitReleaseAt(lastHour, options.maxRunsPerHour);
-  if (releaseAt) {
-    const minutes = Math.max(1, Math.ceil((releaseAt.getTime() - now.getTime()) / 60_000));
-    return {
-      ok: false,
-      error: `Se ha alcanzado el límite de ${options.maxRunsPerHour} ejecuciones por hora entre todos los usuarios (protege la suscripción de Claude). Podrás lanzar otra a las ${formatMadridTime(releaseAt)} (hora de Madrid), dentro de ${minutes} min.`,
-    };
-  }
-
-  const runId = await repo.createRun(userId, request);
   await repo.saveFiles(runId, TEMPLATE_FILES, []);
   await repo.addEvent({
     run_id: runId,

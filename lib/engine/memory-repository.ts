@@ -1,7 +1,18 @@
+import { hourlyLimitReleaseAt } from "../limits";
 import type { Run, RunEvent, SiteFiles, Task } from "../types";
-import type { NewEvent, NewTask, Repository, RunPatch, TaskPatch } from "./repository";
+import {
+  RunLimitError,
+  type NewEvent,
+  type NewTask,
+  type Repository,
+  type RunLimits,
+  type RunPatch,
+  type TaskPatch,
+} from "./repository";
 
-/** Repositorio en memoria para los tests del motor. */
+const HOUR_MS = 3600 * 1000;
+
+/** Repositorio en memoria para los tests y run-local. */
 export class MemoryRepository implements Repository {
   runs = new Map<string, Run>();
   tasks: Task[] = [];
@@ -14,7 +25,19 @@ export class MemoryRepository implements Repository {
     return `${prefix}-${this.seq}`;
   }
 
-  async createRun(userId: string, request: string) {
+  async createRun(userId: string, request: string, { maxRunsPerHour, maxRunsPerDay, now }: RunLimits) {
+    // Sin ningún await entre contar e insertar: es atómico, como create_run en Postgres.
+    const createdSince = (ms: number) =>
+      [...this.runs.values()].filter((r) => new Date(r.created_at).getTime() >= now.getTime() - ms);
+    if (createdSince(24 * HOUR_MS).filter((r) => r.user_id === userId).length >= maxRunsPerDay) {
+      throw new RunLimitError("day");
+    }
+    const lastHour = createdSince(HOUR_MS)
+      .map((r) => new Date(r.created_at))
+      .sort((a, b) => a.getTime() - b.getTime());
+    const releaseAt = hourlyLimitReleaseAt(lastHour, maxRunsPerHour);
+    if (releaseAt) throw new RunLimitError("hour", releaseAt);
+
     const id = this.id("run");
     this.runs.set(id, {
       id,
@@ -24,21 +47,10 @@ export class MemoryRepository implements Repository {
       summary: null,
       error_count: 0,
       locked_until: null,
-      created_at: new Date().toISOString(),
+      created_at: now.toISOString(),
     });
     this.files.set(id, {});
     return id;
-  }
-
-  async countRunsSince(userId: string, since: Date) {
-    return [...this.runs.values()].filter((r) => r.user_id === userId && new Date(r.created_at) >= since).length;
-  }
-
-  async listRunCreationsSince(since: Date) {
-    return [...this.runs.values()]
-      .map((r) => new Date(r.created_at))
-      .filter((d) => d >= since)
-      .sort((a, b) => a.getTime() - b.getTime());
   }
 
   async getRun(runId: string) {

@@ -125,15 +125,32 @@ describe("cadena de respaldo de modelos", () => {
     expect(error.status).toBe(404);
   });
 
-  it("un 429 no prueba más modelos: se espera lo que diga la API", async () => {
-    const calls: string[] = [];
+  it("un 429 (cuota agotada de ese modelo) pasa al siguiente", async () => {
     const provider = providerReturning(async ({ model }) => {
-      calls.push(model);
-      throw new ApiError({ message: body429, status: 429 });
+      if (model === "m-orq") throw new ApiError({ message: body429, status: 429 });
+      return { text: '{"summary":"ok"}' };
     }, ["resp-1"]);
-    const error = await provider.summarize({ request: "x", tasks: [] }).catch((e) => e);
-    expect(calls).toEqual(["m-orq"]);
-    expect(error.retryAfterSeconds).toBe(37);
+    const out = await provider.summarize({ request: "x", tasks: [] });
+    expect(out).toMatchObject({ model: "resp-1", fallbackFrom: ["m-orq (429)"] });
+  });
+
+  it("si todos dan 429, se espera el menor retryDelay; si además hay saturación, 15 s", async () => {
+    const onlyQuota = providerReturning(async ({ model }) => {
+      const delay = model === "m-orq" ? "37s" : "12s";
+      throw new ApiError({ message: `{"retryDelay": "${delay}"}`, status: 429 });
+    }, ["resp-1"]);
+    const quota = await onlyQuota.summarize({ request: "x", tasks: [] }).catch((e) => e);
+    expect(quota).toBeInstanceOf(RateLimitError);
+    expect(quota.retryAfterSeconds).toBe(12);
+    expect(quota.overloaded).toBe(false);
+
+    const mixed = providerReturning(async ({ model }) => {
+      if (model === "m-orq") throw new ApiError({ message: body429, status: 429 });
+      throw apiError(503);
+    }, ["resp-1"]);
+    const both = await mixed.summarize({ request: "x", tasks: [] }).catch((e) => e);
+    expect(both.retryAfterSeconds).toBe(15);
+    expect(both.overloaded).toBe(true);
   });
 
   it("ordena el respaldo: primero los de la misma gama y sin repetir el del agente", () => {

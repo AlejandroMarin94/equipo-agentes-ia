@@ -190,9 +190,10 @@ export class GeminiProvider implements AgentProvider {
   }
 
   /**
-   * Llama al modelo del agente y, si está saturado (503), agota su tiempo (504 o corte del cliente)
-   * o ya no está disponible (404), prueba el siguiente de la cadena. Si todos fallan por
-   * saturación o tiempo, RateLimitError: el paso se reintenta más tarde sin contar como error.
+   * Llama al modelo del agente y, si está saturado (503), agota su tiempo (504 o corte del cliente),
+   * ha gastado su cuota (429) o ya no está disponible (404), prueba el siguiente de la cadena.
+   * Si todos fallan por saturación, tiempo o cuota, RateLimitError: el paso se reintenta más tarde
+   * sin contar como error (a los 15 s si hubo saturación; si solo hubo 429, lo que pida la API).
    */
   private async generate<T>(
     model: string,
@@ -203,6 +204,7 @@ export class GeminiProvider implements AgentProvider {
     const deadline = Date.now() + REQUEST_TIMEOUT_MS;
     const failed: string[] = [];
     let transient = false;
+    let quotaRetrySeconds: number | null = null;
     let lastError: unknown = null;
 
     for (const candidate of modelChain(model, this.fallbacks)) {
@@ -224,8 +226,13 @@ export class GeminiProvider implements AgentProvider {
         if (!text) throw new Error(`El modelo ${candidate} no ha devuelto contenido`);
         return { data: JSON.parse(text) as T, model: candidate, fallbackFrom: failed };
       } catch (error) {
+        // La cuota gratuita va por modelo: que se agote la de uno (p. ej. la diaria) no impide usar otro.
         if (error instanceof ApiError && error.status === 429) {
-          throw new RateLimitError(parseRetryDelay(error.message), error.message);
+          failed.push(`${candidate} (429)`);
+          const delay = parseRetryDelay(error.message);
+          quotaRetrySeconds = Math.min(quotaRetrySeconds ?? delay, delay);
+          lastError = error;
+          continue;
         }
         if (error instanceof ApiError && FALLBACK_STATUSES.includes(error.status)) {
           failed.push(`${candidate} (${error.status})`);
@@ -247,6 +254,9 @@ export class GeminiProvider implements AgentProvider {
     if (transient) {
       throw new RateLimitError(OVERLOADED_RETRY_SECONDS, failed.join(", "), true);
     }
+    if (quotaRetrySeconds !== null) {
+      throw new RateLimitError(quotaRetrySeconds, failed.join(", "));
+    }
     throw lastError;
   }
 
@@ -256,7 +266,9 @@ export class GeminiProvider implements AgentProvider {
       `Eres el agente Orquestador de un equipo de tres agentes (Orquestador, Develop y Testing).
 Divide la petición del usuario en entre 1 y 5 tareas de desarrollo pequeñas, ordenadas e independientes en lo posible.
 Cada tarea lleva entre 1 y 4 criterios de aceptación concretos y verificables leyendo el código
-(nombres de archivo, elementos, atributos o textos concretos). No incluyas tareas de pruebas ni de despliegue.`,
+(nombres de archivo, elementos, atributos o textos concretos). No incluyas tareas de pruebas ni de despliegue.
+Testing revisa la web entera al terminar cada tarea (también los enlaces rotos), así que ordénalas para que
+la web quede bien tras cada una: una página nueva se crea antes de enlazarla desde el menú, o en la misma tarea.`,
       `Petición del usuario: ${request}\n\nArchivos actuales de la web:\n\n${renderFiles(files)}`,
       planSchema,
     );
@@ -278,7 +290,8 @@ Cada tarea lleva entre 1 y 4 criterios de aceptación concretos y verificables l
       this.models.develop,
       `Eres el agente Develop. Implementas una sola tarea sobre la web.
 Devuelve solo los archivos que cambian. En create y update, "content" es el contenido COMPLETO del archivo
-(no un diff ni un fragmento). No toques lo que no tenga que ver con la tarea.
+(no un diff ni un fragmento). No toques lo que no tenga que ver con la tarea, pero la web entera debe quedar
+funcionando: si enlazas a un archivo que no existe, créalo en este mismo cambio.
 "summary" explica en una o dos frases, en español, qué has cambiado.`,
       `Petición original: ${request}
 

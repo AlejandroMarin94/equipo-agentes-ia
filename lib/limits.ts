@@ -3,7 +3,8 @@ export const LIMITS = {
   maxTasks: 5,
   maxAttempts: 3,
   maxConsecutiveErrors: 3,
-  maxCriteria: 6,
+  /** Lo mismo que pide el prompt del Orquestador (provider.ts): entre 1 y 4. */
+  maxCriteria: 4,
   /** Algo más que maxDuration (300 s) para que un paso colgado no deje el run bloqueado para siempre. */
   lockMs: 320_000,
   errorRetrySeconds: 3,

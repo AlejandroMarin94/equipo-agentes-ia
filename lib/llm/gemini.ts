@@ -104,18 +104,43 @@ export function parseRetryDelay(message: string): number {
   return match ? Math.ceil(Number(match[1])) : DEFAULT_RETRY_SECONDS;
 }
 
+/** Modelo de cada agente: el Orquestador hace pocas llamadas; Develop y Testing, muchas. */
+export interface GeminiModels {
+  orchestrator: string;
+  develop: string;
+  testing: string;
+}
+
+/** Por defecto: Flash para el Orquestador y Flash-Lite (más cuota gratuita) para Develop y Testing. */
+export const DEFAULT_GEMINI_MODELS: GeminiModels = {
+  orchestrator: "gemini-3.8-flash",
+  develop: "gemini-3.5-flash-lite",
+  testing: "gemini-3.5-flash-lite",
+};
+
+/** GEMINI_MODEL_<AGENTE>, si no GEMINI_MODEL y si no el valor por defecto de cada agente. */
+export function resolveGeminiModels(env: Record<string, string | undefined>): GeminiModels {
+  const pick = (specific: string | undefined, fallback: string) =>
+    specific?.trim() || env.GEMINI_MODEL?.trim() || fallback;
+  return {
+    orchestrator: pick(env.GEMINI_MODEL_ORCHESTRATOR, DEFAULT_GEMINI_MODELS.orchestrator),
+    develop: pick(env.GEMINI_MODEL_DEVELOP, DEFAULT_GEMINI_MODELS.develop),
+    testing: pick(env.GEMINI_MODEL_TESTING, DEFAULT_GEMINI_MODELS.testing),
+  };
+}
+
 export class GeminiProvider implements AgentProvider {
   readonly name = "gemini";
   private readonly client: GoogleGenAI;
 
-  constructor(apiKey: string, private readonly model: string) {
+  constructor(apiKey: string, private readonly models: GeminiModels) {
     this.client = new GoogleGenAI({ apiKey, httpOptions: { timeout: REQUEST_TIMEOUT_MS } });
   }
 
-  private async generate<T>(system: string, prompt: string, schema: Schema): Promise<T> {
+  private async generate<T>(model: string, system: string, prompt: string, schema: Schema): Promise<T> {
     try {
       const response = await this.client.models.generateContent({
-        model: this.model,
+        model,
         contents: prompt,
         config: {
           systemInstruction: `${system}\n\n${COMMON_RULES}`,
@@ -141,6 +166,7 @@ export class GeminiProvider implements AgentProvider {
 
   async plan({ request, files }: { request: string; files: SiteFiles }): Promise<PlannedTask[]> {
     const out = await this.generate<{ tasks: PlannedTask[] }>(
+      this.models.orchestrator,
       `Eres el agente Orquestador de un equipo de tres agentes (Orquestador, Develop y Testing).
 Divide la petición del usuario en entre 1 y 5 tareas de desarrollo pequeñas, ordenadas e independientes en lo posible.
 Cada tarea lleva entre 1 y 4 criterios de aceptación concretos y verificables leyendo el código
@@ -163,6 +189,7 @@ Cada tarea lleva entre 1 y 4 criterios de aceptación concretos y verificables l
     files: SiteFiles;
   }): Promise<DevelopOutput> {
     const out = await this.generate<{ summary: string; changes: FileChange[] }>(
+      this.models.develop,
       `Eres el agente Develop. Implementas una sola tarea sobre la web.
 Devuelve solo los archivos que cambian. En create y update, "content" es el contenido COMPLETO del archivo
 (no un diff ni un fragmento). No toques lo que no tenga que ver con la tarea.
@@ -181,6 +208,7 @@ ${renderFiles(files)}`,
 
   async review({ request, task, files }: { request: string; task: TaskInput; files: SiteFiles }): Promise<ReviewOutput> {
     const out = await this.generate<ReviewOutput>(
+      this.models.testing,
       `Eres el agente Testing. Revisas si el código cumple cada criterio de aceptación de una tarea.
 Evalúa cada criterio por separado leyendo los archivos; sé estricto pero no inventes requisitos nuevos.
 Devuelve un resultado por criterio, en el mismo orden, con un motivo breve y concreto en español
@@ -201,6 +229,7 @@ Devuelve un resultado por criterio, en el mismo orden, con un motivo breve y con
       )
       .join("\n");
     const out = await this.generate<{ summary: string }>(
+      this.models.orchestrator,
       `Eres el agente Orquestador. Redacta un resumen final breve (3-6 frases, en español) para el usuario:
 qué se ha hecho y, si alguna tarea ha quedado bloqueada, por qué y qué haría falta para terminarla.`,
       `Petición: ${request}\n\nResultado de las tareas:\n${lines}`,

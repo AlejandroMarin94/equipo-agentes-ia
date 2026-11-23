@@ -1,4 +1,4 @@
-import { GeminiProvider } from "./gemini";
+import { GeminiProvider, resolveGeminiModels } from "./gemini";
 import { MockProvider } from "./mock";
 import type { AgentProvider } from "./types";
 
@@ -13,5 +13,5 @@ export function getProvider(): AgentProvider {
   }
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("Falta GEMINI_API_KEY (o usa LLM_PROVIDER=mock)");
-  return new GeminiProvider(apiKey, process.env.GEMINI_MODEL || "gemini-2.5-flash");
+  return new GeminiProvider(apiKey, resolveGeminiModels(process.env));
 }

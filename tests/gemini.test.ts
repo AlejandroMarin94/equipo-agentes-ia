@@ -1,11 +1,11 @@
 import { ApiError } from "@google/genai";
 import { describe, expect, it } from "vitest";
-import { GeminiProvider, parseRetryDelay } from "@/lib/llm/gemini";
+import { DEFAULT_GEMINI_MODELS, GeminiProvider, parseRetryDelay, resolveGeminiModels } from "@/lib/llm/gemini";
 import { RateLimitError } from "@/lib/llm/types";
 
 /** Sustituye la llamada real a la API por una respuesta o un error. */
-function providerReturning(impl: () => Promise<unknown>) {
-  const provider = new GeminiProvider("clave-falsa", "modelo");
+function providerReturning(impl: (request: { model: string }) => Promise<unknown>) {
+  const provider = new GeminiProvider("clave-falsa", { orchestrator: "m-orq", develop: "m-dev", testing: "m-test" });
   (provider as unknown as { client: unknown }).client = { models: { generateContent: impl } };
   return provider;
 }
@@ -54,5 +54,31 @@ describe("proveedor Gemini", () => {
   it("usa 30 s si la API no indica retryDelay", () => {
     expect(parseRetryDelay("sin pista")).toBe(30);
     expect(parseRetryDelay('"retryDelay": "2.5s"')).toBe(3);
+  });
+});
+
+describe("modelo por agente", () => {
+  it("usa los valores por defecto sin variables", () => {
+    expect(resolveGeminiModels({})).toEqual(DEFAULT_GEMINI_MODELS);
+  });
+
+  it("GEMINI_MODEL hace de respaldo común y cada GEMINI_MODEL_<AGENTE> manda sobre él", () => {
+    expect(
+      resolveGeminiModels({ GEMINI_MODEL: "comun", GEMINI_MODEL_DEVELOP: "dev", GEMINI_MODEL_TESTING: "  " }),
+    ).toEqual({ orchestrator: "comun", develop: "dev", testing: "comun" });
+  });
+
+  it("cada agente llama a su modelo", async () => {
+    const models: string[] = [];
+    const provider = providerReturning(async ({ model }) => {
+      models.push(model);
+      return { text: '{"tasks":[],"summary":"ok","changes":[],"passed":true,"results":[]}' };
+    });
+    const task = { position: 0, title: "t", description: "d", acceptance_criteria: ["c"], attempts: 0 };
+    await provider.plan({ request: "x", files: {} });
+    await provider.develop({ request: "x", task, feedback: null, files: {} });
+    await provider.review({ request: "x", task, files: {} });
+    await provider.summarize({ request: "x", tasks: [] });
+    expect(models).toEqual(["m-orq", "m-dev", "m-test", "m-orq"]);
   });
 });

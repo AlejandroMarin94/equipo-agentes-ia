@@ -1,4 +1,4 @@
-import { resolveModels } from "./chain";
+import { resolveModels } from "./models";
 import { createClaudeCaller, type CallInfo } from "./claude";
 import { MockProvider } from "./mock";
 import { ClaudeProvider } from "./provider";

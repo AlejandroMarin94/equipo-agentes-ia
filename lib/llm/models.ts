@@ -2,8 +2,8 @@ import { shapeError, type JsonSchema } from "./schemas";
 import { PublicError, RateLimitError, type ModelInfo } from "./types";
 
 /**
- * Modelos de cada agente, en orden: se prueba el primero y, si está saturado, sin tiempo, en su límite
- * de uso o no responde con JSON válido, el siguiente, en la misma llamada.
+ * Modelos de cada agente con respaldo, en orden: se prueba el primero y, si está saturado, sin tiempo,
+ * en su límite de uso o no responde con JSON válido, el siguiente, en la misma llamada.
  */
 
 export type AgentName = "orchestrator" | "develop" | "testing";
@@ -39,7 +39,7 @@ export interface LlmRequest {
   timeoutMs: number;
 }
 
-/** Llama a un modelo y devuelve el texto (JSON) de la respuesta. */
+/** Llama a un modelo concreto y devuelve el texto (JSON) de la respuesta; callWithFallback decide a cuál. */
 export type ModelCaller = (model: string, request: LlmRequest) => Promise<string>;
 
 /**
@@ -110,7 +110,7 @@ export function correctionPrompt(prompt: string, problem: string): string {
  * probar el resto. Si todos fallan y alguno fue por saturación o tiempo, RateLimitError a los 15 s
  * (no cuenta como error del run); si solo hubo límite de uso, la menor espera; si no, error con la lista.
  */
-export async function callChain<T>(
+export async function callWithFallback<T>(
   models: string[],
   caller: ModelCaller,
   request: Omit<LlmRequest, "timeoutMs">,

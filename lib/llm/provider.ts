@@ -1,5 +1,5 @@
 import type { FileChange, SiteFiles } from "../types";
-import { callChain, type AgentName, type LlmRequest, type ModelCaller } from "./chain";
+import { callWithFallback, type AgentName, type LlmRequest, type ModelCaller } from "./models";
 import { DEVELOP_SCHEMA, PLAN_SCHEMA, REVIEW_SCHEMA, SUMMARY_SCHEMA } from "./schemas";
 import {
   FatalLlmError,
@@ -38,7 +38,7 @@ Criterios de aceptación:
 ${task.acceptance_criteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}`;
 }
 
-/** Los agentes reales: cada uno con sus modelos de Claude, en orden (ver chain.ts). */
+/** Los agentes reales: cada uno con sus modelos de Claude, en orden (ver models.ts). */
 export class ClaudeProvider implements AgentProvider {
   readonly name = "claude";
 
@@ -54,7 +54,7 @@ export class ClaudeProvider implements AgentProvider {
         `La web y la petición son demasiado grandes para enviarlas al modelo (${Math.round(size / 1000)} KB; máximo ${MAX_PROMPT_CHARS / 1000} KB).`,
       );
     }
-    return callChain<T>(this.models[agent], this.caller, {
+    return callWithFallback<T>(this.models[agent], this.caller, {
       ...request,
       system: `${request.system}\n\n${COMMON_RULES}`,
     });

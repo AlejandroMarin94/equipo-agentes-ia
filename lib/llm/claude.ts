@@ -9,7 +9,7 @@ import {
   type SDKRateLimitInfo,
   type SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { DEFAULT_RETRY_SECONDS, ModelError, type LlmRequest, type ModelCaller } from "./chain";
+import { DEFAULT_RETRY_SECONDS, ModelError, type LlmRequest, type ModelCaller } from "./models";
 import { claudeExecutable } from "./claude-cli";
 import { FatalLlmError, describeError } from "./types";
 
@@ -188,7 +188,7 @@ function checkLimit(model: string, info: SDKRateLimitInfo) {
 }
 
 /**
- * Caller de Claude para la cadena. `run` (el `query` del SDK) y `env` se sustituyen en los tests;
+ * Caller de Claude para callWithFallback (models.ts). `run` (el `query` del SDK) y `env` se sustituyen en los tests;
  * `onCall` recibe cada llamada terminada.
  */
 export function createClaudeCaller(

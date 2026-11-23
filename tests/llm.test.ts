@@ -7,12 +7,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_MODELS,
   ModelError,
-  callChain,
+  callWithFallback,
   parseModels,
   resolveModels,
   type LlmRequest,
   type ModelCaller,
-} from "@/lib/llm/chain";
+} from "@/lib/llm/models";
 import { claudeAuth, classifyFailure, createClaudeCaller, subprocessEnv, type CallInfo } from "@/lib/llm/claude";
 import { claudeExecutable, resetClaudeExecutable } from "@/lib/llm/claude-cli";
 import { getProvider } from "@/lib/llm";
@@ -58,10 +58,10 @@ describe("modelos de cada agente", () => {
   });
 });
 
-describe("callChain: respaldo y JSON", () => {
+describe("callWithFallback: respaldo y JSON", () => {
   it("si Opus está saturado responde Sonnet y queda registrado", async () => {
     const caller = fakeCaller({ opus: [new ModelError("overloaded", "x")], sonnet: [ok] });
-    expect(await callChain(["opus", "sonnet"], caller, request)).toEqual({
+    expect(await callWithFallback(["opus", "sonnet"], caller, request)).toEqual({
       data: { summary: "ok" },
       model: "sonnet",
       fallbackFrom: ["opus (saturado)"],
@@ -71,7 +71,7 @@ describe("callChain: respaldo y JSON", () => {
   it("JSON no válido: se repite una vez con el error en el prompt y, si vale, no pasa al siguiente", async () => {
     const calls: { model: string; prompt: string }[] = [];
     const caller = fakeCaller({ opus: ["no es json", "```json\n" + ok + "\n```"] }, calls);
-    const out = await callChain(["opus", "sonnet"], caller, request);
+    const out = await callWithFallback(["opus", "sonnet"], caller, request);
     expect(out).toMatchObject({ model: "opus", fallbackFrom: [] });
     expect(calls.map((c) => c.model)).toEqual(["opus", "opus"]);
     expect(calls[1].prompt).toMatch(/^p\n\nTu respuesta anterior no era válida \(JSON no válido/);
@@ -79,20 +79,20 @@ describe("callChain: respaldo y JSON", () => {
 
   it("JSON con forma incorrecta dos veces: pasa al siguiente modelo", async () => {
     const caller = fakeCaller({ opus: ['{"resumen":"x"}', '{"resumen":"x"}'], sonnet: [ok] });
-    const out = await callChain(["opus", "sonnet"], caller, request);
+    const out = await callWithFallback(["opus", "sonnet"], caller, request);
     expect(out).toMatchObject({ model: "sonnet", fallbackFrom: ["opus (JSON no válido)"] });
   });
 
   it("límite de uso en todos: espera hasta la renovación más próxima", async () => {
     const caller = fakeCaller({ opus: [new ModelError("quota", "x", 3600)], sonnet: [new ModelError("quota", "x", 900)] });
-    const error = await callChain(["opus", "sonnet"], caller, request).catch((e: unknown) => e);
+    const error = await callWithFallback(["opus", "sonnet"], caller, request).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(RateLimitError);
     expect(error).toMatchObject({ overloaded: false, retryAfterSeconds: 900, message: "opus (límite de uso), sonnet (límite de uso)" });
   });
 
   it("saturación o tiempo agotado: reintento a los 15 s sin contar como error", async () => {
     const caller = fakeCaller({ opus: [new ModelError("timeout", "x")], sonnet: [new ModelError("quota", "x", 900)] });
-    expect(await callChain(["opus", "sonnet"], caller, request).catch((e: unknown) => e)).toMatchObject({
+    expect(await callWithFallback(["opus", "sonnet"], caller, request).catch((e: unknown) => e)).toMatchObject({
       overloaded: true,
       retryAfterSeconds: 15,
     });
@@ -100,7 +100,7 @@ describe("callChain: respaldo y JSON", () => {
 
   it("modelo no disponible en todos: error con la lista", async () => {
     const caller = fakeCaller({ opus: [new ModelError("unavailable", "no existe")] });
-    const error = await callChain(["opus"], caller, request).catch((e: unknown) => e);
+    const error = await callWithFallback(["opus"], caller, request).catch((e: unknown) => e);
     expect(error).not.toBeInstanceOf(RateLimitError);
     expect((error as Error).message).toContain("opus (no disponible)");
   });
@@ -108,7 +108,7 @@ describe("callChain: respaldo y JSON", () => {
   it("un fallo fatal (sin sesión, credencial de pago) se lanza sin probar el resto", async () => {
     const calls: { model: string; prompt: string }[] = [];
     const caller = fakeCaller({ opus: [new FatalLlmError("sin sesión")], sonnet: [ok] }, calls);
-    await expect(callChain(["opus", "sonnet"], caller, request)).rejects.toBeInstanceOf(FatalLlmError);
+    await expect(callWithFallback(["opus", "sonnet"], caller, request)).rejects.toBeInstanceOf(FatalLlmError);
     expect(calls).toHaveLength(1);
   });
 });

@@ -7,7 +7,7 @@
  * Lee CLAUDE_CODE_OAUTH_TOKEN y CLAUDE_MODELS_* de .env.local o del entorno (el token no se imprime);
  * sin token, usa la sesión de Claude Code de este equipo. Por modelo: OK/FALLO, tiempo y motivo.
  */
-import { resolveModels, parseOutput, type LlmRequest } from "../lib/llm/chain";
+import { resolveModels, parseOutput, type LlmRequest } from "../lib/llm/models";
 import { createClaudeCaller } from "../lib/llm/claude";
 import { PLAN_SCHEMA } from "../lib/llm/schemas";
 import { describeError } from "../lib/llm/types";
